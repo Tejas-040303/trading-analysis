@@ -31,6 +31,14 @@ const C = {
   roseDim: "#5A2530",
 };
 
+// Balance-operation kinds, for the deposits/withdrawals/transfers ledger.
+const OP_KIND = {
+  deposit:      { label: "Deposit",      color: C.emerald, bg: C.emeraldDim },
+  withdrawal:   { label: "Withdrawal",   color: C.rose,    bg: C.roseDim },
+  transfer_out: { label: "Transfer out", color: C.amber,   bg: C.amberDim },
+  transfer_in:  { label: "Transfer in",  color: C.emerald, bg: C.emeraldDim },
+};
+
 const round2 = (n) => Math.round(n * 100) / 100;
 const round1 = (n) => Math.round(n * 10) / 10;
 const fmtMoney = (n) => {
@@ -49,6 +57,8 @@ const fmtDateFull = (iso) => {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 };
+const fmtDateTimeShort = (iso) =>
+  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 function parseMT5DateTime(value) {
   if (value == null) return null;
@@ -276,6 +286,29 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
     const c = (b.comment || "").toLowerCase();
     if (!c.includes("transfer to") && !c.includes("transfer from")) depositsTotal += b.profit;
   });
+
+  // Classify each balance op for the ledger (display only — depositsTotal/roiPct unchanged).
+  const classifyOp = (b) => {
+    const c = (b.comment || "").toLowerCase();
+    if (c.includes("transfer to")) return "transfer_out";
+    if (c.includes("transfer from")) return "transfer_in";
+    return b.profit >= 0 ? "deposit" : "withdrawal";
+  };
+  const balanceOpsList = bops
+    .map((b) => ({
+      dealId: b.dealId,
+      time: b.time.toISOString(),
+      profit: round2(b.profit),
+      balance: b.balance != null ? round2(b.balance) : null,
+      comment: b.comment || "",
+      kind: classifyOp(b),
+    }))
+    .sort((x, y) => new Date(y.time) - new Date(x.time));
+  const sumKind = (k) => round2(bops.reduce((s, b) => s + (classifyOp(b) === k ? b.profit : 0), 0));
+  const depositsSum = sumKind("deposit");
+  const withdrawalsSum = sumKind("withdrawal");
+  const transferOutSum = sumKind("transfer_out");
+  const transferInSum = sumKind("transfer_in");
   let currentBalance = bops.length ? bops[bops.length - 1].balance : null;
   // Phase 1 "balance drawdown (approximate)" — walks only balance-type rows, so
   // this is balance-curve drawdown, not intra-trade equity drawdown (spec §6).
@@ -316,6 +349,12 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
     tiltClusters: tiltClusters.sort((a, b) => new Date(b.start) - new Date(a.start)),
     revengeCount,
     revengePl: round2(revengePl),
+    balanceOps: balanceOpsList,
+    depositsSum,
+    withdrawalsSum,
+    transferOutSum,
+    transferInSum,
+    netCapital: round2(depositsSum + withdrawalsSum),
   };
 }
 
@@ -337,6 +376,19 @@ function StatCard({ icon: Icon, label, value, sub, tone }) {
         {value}
       </div>
       {sub && <div className="text-xs mt-0.5" style={{ color: C.textFaint }}>{sub}</div>}
+    </div>
+  );
+}
+
+function BalanceTotal({ label, value, tone }) {
+  const color =
+    tone === "good" ? C.emerald : tone === "bad" ? C.rose : tone === "amber" ? C.amber : C.text;
+  return (
+    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+      <div className="text-xs mb-1" style={{ color: C.textMuted }}>{label}</div>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color }}>
+        {fmtMoney(value)}
+      </div>
     </div>
   );
 }
@@ -724,6 +776,58 @@ export default function TradingJournal() {
           </div>
         </div>
       </div>
+
+      {a.balanceOps.length > 0 && (
+        <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <div className="flex items-center gap-2 mb-3">
+            <Wallet size={15} style={{ color: C.amber }} />
+            <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Deposits, withdrawals &amp; transfers</span>
+            <span className="text-xs" style={{ color: C.textFaint }}>({a.balanceOps.length} balance operations)</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <BalanceTotal label="Deposited" value={a.depositsSum} tone="good" />
+            <BalanceTotal label="Withdrawn" value={a.withdrawalsSum} tone="bad" />
+            <BalanceTotal label="Transferred out (skim)" value={a.transferOutSum} tone="amber" />
+            <BalanceTotal label="Transferred in" value={a.transferInSum} tone="good" />
+          </div>
+
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            <table className="w-full text-sm">
+              <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+                <tr style={{ color: C.textFaint }}>
+                  <th className="text-left pb-2 text-xs">Date</th>
+                  <th className="text-left pb-2 text-xs">Type</th>
+                  <th className="text-right pb-2 text-xs">Amount</th>
+                  <th className="text-right pb-2 text-xs">Balance after</th>
+                  <th className="text-left pb-2 text-xs pl-3">Comment</th>
+                </tr>
+              </thead>
+              <tbody>
+                {a.balanceOps.map((op) => {
+                  const meta = OP_KIND[op.kind];
+                  return (
+                    <tr key={op.dealId} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                      <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(op.time)}</td>
+                      <td className="py-1.5">
+                        <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: meta.color, background: meta.bg, whiteSpace: "nowrap" }}>{meta.label}</span>
+                      </td>
+                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: op.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(op.profit)}</td>
+                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{op.balance != null ? fmtMoney(op.balance) : "—"}</td>
+                      <td className="py-1.5 pl-3 text-xs" style={{ color: C.textFaint, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.comment}>{op.comment || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+            Net external capital (deposits − withdrawals): {" "}
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: a.netCapital >= 0 ? C.emerald : C.rose }}>{fmtMoney(a.netCapital)}</span>.
+            {" "}Transfers move money between your own accounts, so they net out of ROI; "transfer out" is profit you skimmed off to preserve it.
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl p-4 mb-2" style={{ border: `0.5px solid ${C.border}` }}>
         <div className="text-xs leading-relaxed" style={{ color: C.textFaint }}>
