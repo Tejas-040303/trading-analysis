@@ -135,6 +135,134 @@ export function biasAtBar(structureEvents, barIndex) {
   return { bias, lastEvent };
 }
 
+// ── S2: Order Block detection ────────────────────────────────────────────
+// An Order Block is the last opposing-color candle immediately before the
+// impulsive move that produced a BOS/CHoCH. For a bullish BOS, the OB is the
+// last bearish candle in the base before the rally; for bearish, the last
+// bullish candle before the drop.
+//
+// An OB stays "active" until price trades fully through it (mitigated).
+// Mitigation = a candle's body closes past the OB zone in the opposing direction.
+
+function isBearishCandle(c) { return c.close < c.open; }
+function isBullishCandle(c) { return c.close > c.open; }
+
+export function detectOrderBlocks(candles, structureEvents) {
+  const obs = []; // { direction, high, low, formIndex, confirmedAt, mitigatedAt }
+
+  for (const ev of structureEvents) {
+    const bosIdx = ev.swingIndex;
+    if (bosIdx < 1) continue;
+
+    if (ev.direction === "bullish") {
+      // Find last bearish candle before the impulsive move
+      for (let i = bosIdx - 1; i >= Math.max(0, bosIdx - 10); i--) {
+        if (isBearishCandle(candles[i])) {
+          obs.push({
+            direction: "bullish",
+            high: candles[i].high,
+            low: candles[i].low,
+            formIndex: i,
+            confirmedAt: ev.confirmedAt,
+            mitigatedAt: null,
+          });
+          break;
+        }
+      }
+    } else {
+      // Find last bullish candle before the impulsive move
+      for (let i = bosIdx - 1; i >= Math.max(0, bosIdx - 10); i--) {
+        if (isBullishCandle(candles[i])) {
+          obs.push({
+            direction: "bearish",
+            high: candles[i].high,
+            low: candles[i].low,
+            formIndex: i,
+            confirmedAt: ev.confirmedAt,
+            mitigatedAt: null,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // Walk candles forward to mark mitigated OBs (causal: only check bars after confirmation)
+  for (const ob of obs) {
+    for (let i = ob.confirmedAt + 1; i < candles.length; i++) {
+      if (ob.direction === "bullish" && candles[i].close < ob.low) {
+        ob.mitigatedAt = i;
+        break;
+      }
+      if (ob.direction === "bearish" && candles[i].close > ob.high) {
+        ob.mitigatedAt = i;
+        break;
+      }
+    }
+  }
+
+  return obs;
+}
+
+// Query active OBs at a given bar index in a given direction
+export function activeOBsAtBar(orderBlocks, barIndex, direction) {
+  return orderBlocks.filter((ob) =>
+    ob.direction === direction &&
+    ob.confirmedAt <= barIndex &&
+    (ob.mitigatedAt === null || ob.mitigatedAt > barIndex)
+  );
+}
+
+export function computeS2Verdict(candles, trade, structureEvents, orderBlocks, lookback) {
+  const barIdx = findBarAtTime(candles, trade.openTime);
+  if (barIdx < 0) return null;
+  if (candles.slice(0, barIdx + 1).length < lookback * 2 + 1) {
+    return { verdict: "insufficient", detail: "Not enough candle data for OB detection.", atOB: false };
+  }
+
+  const tradeDir = trade.type === "buy" ? "bullish" : "bearish";
+  const entryPrice = typeof trade.openPrice === "number" ? trade.openPrice : parseFloat(trade.openPrice);
+  if (!Number.isFinite(entryPrice)) {
+    return { verdict: "insufficient", detail: "No entry price available.", atOB: false };
+  }
+
+  const activeOBs = activeOBsAtBar(orderBlocks, barIdx, tradeDir);
+
+  if (activeOBs.length === 0) {
+    return { verdict: "no-ob", detail: `No active ${tradeDir} order block at entry.`, atOB: false };
+  }
+
+  // Check if entry price is within or touching any active OB zone
+  const touching = activeOBs.filter((ob) => entryPrice >= ob.low && entryPrice <= ob.high);
+
+  if (touching.length > 0) {
+    const ob = touching[0];
+    const barsAgo = barIdx - ob.formIndex;
+    return {
+      verdict: "at-ob",
+      detail: `Entry at an active ${tradeDir} order block (formed ${barsAgo} bars ago, zone ${ob.low.toFixed(2)}–${ob.high.toFixed(2)}).`,
+      atOB: true,
+      obZone: { high: ob.high, low: ob.low },
+    };
+  }
+
+  // Find nearest OB for context
+  const nearest = activeOBs.reduce((best, ob) => {
+    const dist = tradeDir === "bullish"
+      ? entryPrice - ob.high  // how far above the OB
+      : ob.low - entryPrice;  // how far below the OB
+    return (best === null || Math.abs(dist) < Math.abs(best.dist)) ? { ob, dist } : best;
+  }, null);
+
+  const distStr = nearest ? Math.abs(nearest.dist).toFixed(2) : "?";
+  return {
+    verdict: "near-ob",
+    detail: `${activeOBs.length} active ${tradeDir} OB(s) nearby but entry was ${distStr} away from the nearest zone.`,
+    atOB: false,
+    nearestDist: nearest ? nearest.dist : null,
+  };
+}
+
 // ── S6: Session Context ─────────────────────────────────────────────────
 // Which trading session was the trade opened in? Uses broker GMT offset.
 // No candles needed — just the trade's open time.
@@ -205,16 +333,30 @@ export function computeS1Verdict(candles, trade, lookback = 5) {
 }
 
 // ── Composite verdict builder ───────────────────────────────────────────
-// Assembles individual strategy results into a single verdict object per trade.
-// Additional strategies (S2–S5) will be added here as they're built.
+// Precomputes swings, structure, and OBs once per symbol, then evaluates
+// each trade against the shared state. Call precomputeSmcState once per
+// candle array, then computeTradeVerdicts per trade.
 
-export function computeTradeVerdicts(candles, trade, settings = {}) {
+export function precomputeSmcState(candles, lookback = 5) {
+  if (!candles || candles.length < lookback * 2 + 1) return null;
+  const swings = detectSwings(candles, lookback);
+  const structure = detectStructure(candles, swings);
+  const orderBlocks = detectOrderBlocks(candles, structure);
+  return { swings, structure, orderBlocks };
+}
+
+export function computeTradeVerdicts(candles, trade, settings = {}, smcState = null) {
   const lookback = settings.swingLookback || 5;
-  const result = { s1: null, s6: null };
+  const result = { s1: null, s2: null, s6: null };
 
-  // S1: Market Structure
   if (candles && candles.length > 0) {
+    // S1: Market Structure
     result.s1 = computeS1Verdict(candles, trade, lookback);
+
+    // S2: Order Block Confluence (uses precomputed state if available)
+    if (smcState) {
+      result.s2 = computeS2Verdict(candles, trade, smcState.structure, smcState.orderBlocks, lookback);
+    }
   }
 
   // S6: Session Context
