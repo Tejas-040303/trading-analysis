@@ -7,6 +7,7 @@ import {
   UploadCloud, RotateCcw, AlertTriangle, TrendingUp, TrendingDown,
   CircleCheck, Flame, Wallet, Target, Percent, Calendar,
   Settings, Download, Upload, X, BarChart3, ChevronDown, ChevronRight,
+  ArrowUpDown, Filter,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { storage } from "./lib/storage";
@@ -783,6 +784,9 @@ export default function TradingJournal() {
   const [candleIndex, setCandleIndex] = useState({}); // { "GOLD_M5": { symbol, timeframe, count } }
   const [expandedTrade, setExpandedTrade] = useState(null);
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
+  const [tradeSort, setTradeSort] = useState({ col: "openTime", dir: "desc" });
+  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "" });
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
   const candleInputRef = useRef(null);
@@ -1021,6 +1025,101 @@ export default function TradingJournal() {
 
   const hasCandleData = Object.keys(candleIndex).length > 0;
 
+  // Filtered daily stats for charts (date range filter)
+  const filteredDaily = useMemo(() => {
+    if (!analytics) return [];
+    let days = analytics.dailyStats;
+    if (chartRange.from) days = days.filter((d) => d.date >= chartRange.from);
+    if (chartRange.to) days = days.filter((d) => d.date <= chartRange.to);
+    // Recompute cumulative on the filtered slice
+    let cum = 0, cumDisc = 0;
+    return days.map((d) => {
+      cum += d.profit;
+      cumDisc += d.disciplinedProfit;
+      return { ...d, cumProfit: round2(cum), cumDisciplined: round2(cumDisc) };
+    });
+  }, [analytics, chartRange]);
+
+  // Sorted + filtered trades list
+  const sortedTrades = useMemo(() => {
+    if (!analytics) return [];
+    let list = [...analytics.tradesList];
+    // Filter
+    if (tradeFilter.symbol) list = list.filter((t) => t.symbol === tradeFilter.symbol);
+    if (tradeFilter.side) list = list.filter((t) => t.type === tradeFilter.side);
+    if (tradeFilter.structure && hasCandleData) {
+      list = list.filter((t) => {
+        const v = tradeVerdicts[t.ticket];
+        const verdict = v && v.s1 && v.s1.verdict;
+        if (tradeFilter.structure === "aligned") return verdict === "aligned";
+        if (tradeFilter.structure === "counter") return verdict === "counter";
+        if (tradeFilter.structure === "none") return !verdict || verdict === "no-structure" || verdict === "insufficient";
+        return true;
+      });
+    }
+    // Sort
+    const dir = tradeSort.dir === "asc" ? 1 : -1;
+    list.sort((a, b) => {
+      let va, vb;
+      switch (tradeSort.col) {
+        case "openTime": va = a.openTime; vb = b.openTime; break;
+        case "symbol": va = a.symbol; vb = b.symbol; break;
+        case "type": va = a.type; vb = b.type; break;
+        case "durationMin": va = a.durationMin; vb = b.durationMin; break;
+        case "profit": va = a.profit; vb = b.profit; break;
+        case "r": va = a.r ?? -999; vb = b.r ?? -999; break;
+        case "structure": {
+          const sv = (t) => { const v = tradeVerdicts[t.ticket]; return v && v.s1 ? v.s1.verdict : ""; };
+          va = sv(a); vb = sv(b); break;
+        }
+        default: va = a.openTime; vb = b.openTime;
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return list;
+  }, [analytics, tradeSort, tradeFilter, tradeVerdicts, hasCandleData]);
+
+  // Strategy impact stats
+  const strategyImpact = useMemo(() => {
+    if (!analytics || !analytics.tradesList.length) return null;
+    const s1 = { aligned: [], counter: [], noStructure: [], insufficient: [], noCandles: [] };
+    const s6 = {};
+    for (const t of analytics.tradesList) {
+      const v = tradeVerdicts[t.ticket];
+      // S1
+      if (!v || !v.s1) { s1.noCandles.push(t); }
+      else if (v.s1.verdict === "aligned") s1.aligned.push(t);
+      else if (v.s1.verdict === "counter") s1.counter.push(t);
+      else if (v.s1.verdict === "no-structure") s1.noStructure.push(t);
+      else s1.insufficient.push(t);
+      // S6
+      if (v && v.s6 && v.s6.session) {
+        if (!s6[v.s6.session]) s6[v.s6.session] = [];
+        s6[v.s6.session].push(t);
+      }
+    }
+    const stats = (arr) => {
+      const w = arr.filter((t) => t.profit > 0).length;
+      return { n: arr.length, pl: round2(arr.reduce((s, t) => s + t.profit, 0)), winRate: arr.length ? round1((w / arr.length) * 100) : 0 };
+    };
+    return {
+      s1: { aligned: stats(s1.aligned), counter: stats(s1.counter), noStructure: stats(s1.noStructure), insufficient: stats(s1.insufficient), noCandles: stats(s1.noCandles) },
+      s6: Object.fromEntries(Object.entries(s6).map(([k, v]) => [k, stats(v)])),
+    };
+  }, [analytics, tradeVerdicts]);
+
+  const toggleSort = (col) => setTradeSort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  const setRange = (days) => {
+    if (!analytics || !analytics.dailyStats.length) return;
+    if (days === 0) { setChartRange({ from: "", to: "" }); return; }
+    const last = analytics.dailyStats[analytics.dailyStats.length - 1].date;
+    const d = new Date(last + "T00:00:00");
+    d.setDate(d.getDate() - days + 1);
+    setChartRange({ from: d.toISOString().slice(0, 10), to: "" });
+  };
+
   const seriousLabel = new Date(settings.seriousStart + "T00:00:00").toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
@@ -1235,6 +1334,35 @@ export default function TradingJournal() {
       {/* ── Dashboard tab ──────────────────────────────────────────── */}
       {activeTab === "dashboard" && (
         <>
+          <div className="flex items-center gap-2 mb-4 flex-wrap rounded-lg p-2" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <span className="text-xs" style={{ color: C.textMuted }}>Range:</span>
+            {[{ label: "7d", d: 7 }, { label: "14d", d: 14 }, { label: "30d", d: 30 }, { label: "All", d: 0 }].map((r) => (
+              <button
+                key={r.label}
+                onClick={() => setRange(r.d)}
+                className="text-xs px-2 py-1 rounded"
+                style={{
+                  background: (r.d === 0 && !chartRange.from) ? C.panelAlt : "transparent",
+                  color: (r.d === 0 && !chartRange.from) ? C.text : C.textMuted,
+                  border: `0.5px solid ${C.border}`, cursor: "pointer",
+                }}
+              >{r.label}</button>
+            ))}
+            <input
+              type="date" value={chartRange.from} onChange={(e) => setChartRange((p) => ({ ...p, from: e.target.value }))}
+              className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}`, fontFamily: "'JetBrains Mono', monospace" }}
+            />
+            <span className="text-xs" style={{ color: C.textFaint }}>to</span>
+            <input
+              type="date" value={chartRange.to} onChange={(e) => setChartRange((p) => ({ ...p, to: e.target.value }))}
+              className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}`, fontFamily: "'JetBrains Mono', monospace" }}
+            />
+            {(chartRange.from || chartRange.to) && (
+              <button onClick={() => setChartRange({ from: "", to: "" })} className="text-xs px-2 py-1 rounded" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
+            )}
+            {chartRange.from && <span className="text-xs" style={{ color: C.textFaint }}>Showing {filteredDaily.length} of {a.dailyStats.length} days</span>}
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
             <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
@@ -1263,15 +1391,15 @@ export default function TradingJournal() {
           </div>
 
           <div className="mb-4">
-            <ChartCard title="Daily P/L and cumulative trading profit" height={260}>
-              <ComposedChart data={a.dailyStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <ChartCard title={`Daily P/L and cumulative trading profit${chartRange.from ? " (filtered)" : ""}`} height={260}>
+              <ComposedChart data={filteredDaily} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" {...axisProps} />
                 <YAxis yAxisId="left" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
                 <YAxis yAxisId="right" orientation="right" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
-                <Tooltip {...tooltipStyle} formatter={(v, name) => [fmtMoney(v), name]} />
+                <Tooltip {...tooltipStyle} formatter={(v, name) => [fmtMoney(v), name]} labelFormatter={(l, payload) => { const d = payload?.[0]?.payload; return d ? `${l} · ${d.trades} trades · ${d.winRate}% win` : l; }} />
                 <Bar yAxisId="left" dataKey="profit" name="Daily P/L" radius={[3, 3, 0, 0]}>
-                  {a.dailyStats.map((d, i) => (
+                  {filteredDaily.map((d, i) => (
                     <Cell
                       key={i}
                       fill={d.profit >= 0 ? C.emerald : C.rose}
@@ -1308,7 +1436,7 @@ export default function TradingJournal() {
                 <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="day" {...axisProps} />
                 <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
-                <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} />
+                <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades`} />
                 <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
                   {a.dowStats.map((d, i) => (
                     <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
@@ -1508,7 +1636,7 @@ export default function TradingJournal() {
             <div className="flex items-center gap-2 mb-3 flex-wrap">
               <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Trades</span>
               <span className="text-xs" style={{ color: C.textFaint }}>
-                ({a.tradesList.length})
+                ({sortedTrades.length}{sortedTrades.length !== a.tradesList.length ? ` of ${a.tradesList.length}` : ""})
                 {a.avgR != null && (
                   <> · avg <span style={{ color: a.avgR >= 0 ? C.emerald : C.rose, fontFamily: "'JetBrains Mono', monospace" }}>{a.avgR >= 0 ? "+" : ""}{a.avgR}R</span> over {a.rCount} with a stop</>
                 )}
@@ -1517,29 +1645,77 @@ export default function TradingJournal() {
                 <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: C.amber, background: C.amberDim }}>S1 active</span>
               )}
             </div>
-            <div style={{ maxHeight: 460, overflowY: "auto" }}>
-              <table className="w-full text-sm">
-                <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+            {/* Filter bar */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <Filter size={12} style={{ color: C.textFaint }} />
+              <select value={tradeFilter.symbol} onChange={(e) => setTradeFilter((p) => ({ ...p, symbol: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                <option value="">All symbols</option>
+                {a.symbolStats.map((s) => <option key={s.symbol} value={s.symbol}>{s.symbol}</option>)}
+              </select>
+              <select value={tradeFilter.side} onChange={(e) => setTradeFilter((p) => ({ ...p, side: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                <option value="">All sides</option>
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+              {hasCandleData && (
+                <select value={tradeFilter.structure} onChange={(e) => setTradeFilter((p) => ({ ...p, structure: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                  <option value="">All structure</option>
+                  <option value="aligned">With structure</option>
+                  <option value="counter">Against structure</option>
+                  <option value="none">No verdict</option>
+                </select>
+              )}
+              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure) && (
+                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
+              )}
+            </div>
+            <div style={{ maxHeight: 460, overflow: "auto" }}>
+              <table className="text-sm" style={{ minWidth: hasCandleData ? 900 : 750, width: "100%" }}>
+                <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                   <tr style={{ color: C.textFaint }}>
                     {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
-                    <th className="text-left pb-2 text-xs">When</th>
-                    <th className="text-left pb-2 text-xs">Symbol</th>
-                    <th className="text-left pb-2 text-xs">Side</th>
-                    <th className="text-right pb-2 text-xs">Hold</th>
-                    <th className="text-right pb-2 text-xs">P/L</th>
-                    <th className="text-right pb-2 text-xs">R</th>
-                    {hasCandleData && <th className="text-center pb-2 text-xs">Structure</th>}
+                    {[
+                      { col: "openTime", label: "When", align: "text-left" },
+                      { col: "symbol", label: "Symbol", align: "text-left" },
+                      { col: "type", label: "Side", align: "text-left" },
+                      { col: "durationMin", label: "Hold", align: "text-right" },
+                      { col: "profit", label: "P/L", align: "text-right" },
+                      { col: "r", label: "R", align: "text-right" },
+                    ].map((h) => (
+                      <th key={h.col} className={`${h.align} pb-2 text-xs`} style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }} onClick={() => toggleSort(h.col)}>
+                        {h.label} {tradeSort.col === h.col ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
+                      </th>
+                    ))}
+                    {hasCandleData && (
+                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleSort("structure")}>
+                        Structure {tradeSort.col === "structure" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
+                      </th>
+                    )}
                     <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140 }}>Note</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {a.tradesList.map((t) => {
+                  {sortedTrades.map((t) => {
                     const v = tradeVerdicts[t.ticket];
                     const s1 = v && v.s1;
                     const s6 = v && v.s6;
                     const isExpanded = expandedTrade === t.ticket;
-                    const s1Color = !s1 ? C.textFaint : s1.verdict === "aligned" ? C.emerald : s1.verdict === "counter" ? C.rose : C.textFaint;
-                    const s1Label = !s1 ? "—" : s1.verdict === "aligned" ? "With" : s1.verdict === "counter" ? "Against" : s1.verdict === "no-structure" ? "No bias" : "—";
+                    const s1Color = !s1 ? C.textFaint
+                      : s1.verdict === "aligned" ? C.emerald
+                      : s1.verdict === "counter" ? C.rose
+                      : s1.verdict === "no-structure" ? C.amber
+                      : C.textFaint;
+                    const s1Label = !s1 ? "No data"
+                      : s1.verdict === "aligned" ? "With"
+                      : s1.verdict === "counter" ? "Against"
+                      : s1.verdict === "no-structure" ? "No bias"
+                      : s1.verdict === "insufficient" ? "Few bars"
+                      : "—";
+                    const s1Bg = !s1 ? "transparent"
+                      : s1.verdict === "aligned" ? C.emeraldDim
+                      : s1.verdict === "counter" ? C.roseDim
+                      : s1.verdict === "no-structure" ? C.amberDim
+                      : "transparent";
                     return (
                       <React.Fragment key={t.ticket}>
                         <tr
@@ -1548,7 +1724,7 @@ export default function TradingJournal() {
                         >
                           {hasCandleData && (
                             <td className="py-1.5" style={{ color: C.textFaint, width: 20 }}>
-                              {s1 && s1.verdict !== "insufficient" ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
+                              {(s1 || s6) ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
                             </td>
                           )}
                           <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
@@ -1559,24 +1735,30 @@ export default function TradingJournal() {
                           <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
                           {hasCandleData && (
                             <td className="py-1.5 text-center">
-                              <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1 && s1.verdict === "aligned" ? C.emeraldDim : s1 && s1.verdict === "counter" ? C.roseDim : "transparent" }}>{s1Label}</span>
+                              <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1Bg }}>{s1Label}</span>
                             </td>
                           )}
                           <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
                         </tr>
-                        {isExpanded && s1 && (
+                        {isExpanded && (
                           <tr>
                             <td colSpan={hasCandleData ? 9 : 7} style={{ padding: 0 }}>
                               <div className="px-4 py-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${s1Color}` }}>
-                                <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
-                                <div className="text-xs" style={{ color: C.text }}>{s1.detail}</div>
-                                {s1.bias && (
-                                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>
-                                    Active bias at entry: <span style={{ color: s1.bias === "bullish" ? C.emerald : C.rose }}>{s1.bias}</span>
-                                  </div>
+                                {s1 ? (
+                                  <>
+                                    <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
+                                    <div className="text-xs" style={{ color: C.text }}>{s1.detail}</div>
+                                    {s1.bias && (
+                                      <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                        Active bias at entry: <span style={{ color: s1.bias === "bullish" ? C.emerald : C.rose }}>{s1.bias}</span>
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <div className="text-xs" style={{ color: C.textFaint }}>No candle data available for {t.symbol} — upload candles via the Candles button to get a structure verdict.</div>
                                 )}
                                 {s6 && s6.session && (
-                                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                  <div className="text-xs mt-2" style={{ color: C.textFaint }}>
                                     S6 — Session: <span style={{ color: C.amber }}>{s6.session}</span>
                                   </div>
                                 )}
@@ -1591,8 +1773,7 @@ export default function TradingJournal() {
               </table>
             </div>
             <div className="text-xs mt-3" style={{ color: C.textFaint }}>
-              R = profit ÷ risk, where risk = stop distance × volume × an empirically-derived point value per symbol. Trades without a stop-loss show "—". Notes save when you click away.
-              {hasCandleData && " Structure = S1 market structure alignment (BOS/CHoCH). Click a row to expand the verdict."}
+              Click column headers to sort. R = profit ÷ risk. Structure: <span style={{ color: C.emerald }}>With</span> = aligned with BOS/CHoCH, <span style={{ color: C.rose }}>Against</span> = counter-trend, <span style={{ color: C.amber }}>No bias</span> = no confirmed structure yet, <span style={{ color: C.textFaint }}>Few bars</span> = insufficient candle history.
             </div>
           </div>
 
@@ -1633,8 +1814,70 @@ export default function TradingJournal() {
             )}
           </div>
 
+          {/* S1 Impact breakdown */}
+          {strategyImpact && hasCandleData && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs font-mono" style={{ color: C.emerald }}>S1</span>
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Market Structure — Impact</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
+                {[
+                  { label: "With structure", data: strategyImpact.s1.aligned, color: C.emerald, bg: C.emeraldDim },
+                  { label: "Against structure", data: strategyImpact.s1.counter, color: C.rose, bg: C.roseDim },
+                  { label: "No bias established", data: strategyImpact.s1.noStructure, color: C.amber, bg: C.amberDim },
+                  { label: "Insufficient bars", data: strategyImpact.s1.insufficient, color: C.textFaint, bg: "transparent" },
+                  { label: "No candle data", data: strategyImpact.s1.noCandles, color: C.textFaint, bg: "transparent" },
+                ].map((g) => (
+                  <div key={g.label} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                    <div className="text-xs mb-1" style={{ color: g.color }}>{g.label}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: g.data.pl >= 0 ? C.emerald : C.rose }}>
+                      {fmtMoney(g.data.pl)}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                      {g.data.n} trades · {g.data.winRate}% win
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs" style={{ color: C.textFaint }}>
+                "With structure" trades are entries that aligned with the active BOS/CHoCH direction — compare their P/L and win rate against "Against structure" to see whether following market structure paid off. "No bias" means structure hadn't established a direction yet. "Insufficient bars" means fewer than {(settings.swingLookback || 5) * 2 + 1} candles existed before the trade. "No candle data" means no CSV was uploaded for that symbol.
+              </div>
+            </div>
+          )}
+
+          {/* S6 Impact breakdown */}
+          {strategyImpact && Object.keys(strategyImpact.s6).length > 0 && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs font-mono" style={{ color: C.amber }}>S6</span>
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Session Context — Impact</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                {["Asian", "London", "New York", "Off-hours"].map((session) => {
+                  const d = strategyImpact.s6[session] || { n: 0, pl: 0, winRate: 0 };
+                  return (
+                    <div key={session} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}`, opacity: d.n > 0 ? 1 : 0.4 }}>
+                      <div className="text-xs mb-1" style={{ color: C.amber }}>{session}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: d.pl >= 0 ? C.emerald : C.rose }}>
+                        {d.n > 0 ? fmtMoney(d.pl) : "—"}
+                      </div>
+                      <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                        {d.n} trades{d.n > 0 ? ` · ${d.winRate}% win` : ""}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-xs" style={{ color: C.textFaint }}>
+                P/L breakdown by trading session. Compare sessions to find which time windows are most profitable for you.
+              </div>
+            </div>
+          )}
+
+          {/* Strategy roadmap */}
           <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-            <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Active strategies</div>
+            <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Strategy roadmap</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {[
                 { id: "S1", name: "Market Structure", desc: "BOS/CHoCH bias alignment", active: hasCandleData, color: C.emerald },
