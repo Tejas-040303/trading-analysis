@@ -263,6 +263,86 @@ export function computeS2Verdict(candles, trade, structureEvents, orderBlocks, l
   };
 }
 
+// ── S4: Liquidity Sweep detection ────────────────────────────────────────
+// A liquidity sweep occurs when a candle's wick pierces a prior swing point
+// but the body closes back inside it — a "stop hunt" that grabs liquidity
+// sitting at the swing level before reversing.
+//
+// Bullish sweep: wick below a swing low, close above it → buyers grabbed stops
+// Bearish sweep: wick above a swing high, close below it → sellers grabbed stops
+
+export function detectLiquiditySweeps(candles, swings) {
+  const sweeps = []; // { type: "bullish"|"bearish", barIndex, swingPrice, wickDepth }
+
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    // Check confirmed swings visible at bar i
+    for (const sw of swings) {
+      if (sw.confirmedAt > i) break;
+
+      // Bullish sweep: wick dips below a swing low but closes above it
+      if (sw.type === "low" && c.low < sw.price && c.close > sw.price) {
+        sweeps.push({
+          type: "bullish",
+          barIndex: i,
+          swingIndex: sw.index,
+          swingPrice: sw.price,
+          wickDepth: sw.price - c.low,
+        });
+      }
+
+      // Bearish sweep: wick pierces above a swing high but closes below it
+      if (sw.type === "high" && c.high > sw.price && c.close < sw.price) {
+        sweeps.push({
+          type: "bearish",
+          barIndex: i,
+          swingIndex: sw.index,
+          swingPrice: sw.price,
+          wickDepth: c.high - sw.price,
+        });
+      }
+    }
+  }
+
+  return sweeps;
+}
+
+export function computeS4Verdict(candles, trade, sweeps, lookback) {
+  const barIdx = findBarAtTime(candles, trade.openTime);
+  if (barIdx < 0) return null;
+  if (candles.slice(0, barIdx + 1).length < lookback * 2 + 1) {
+    return { verdict: "insufficient", detail: "Not enough candle data for sweep detection.", swept: false };
+  }
+
+  const tradeDir = trade.type === "buy" ? "bullish" : "bearish";
+  // Look for sweeps in the trade direction within the last N bars before entry
+  const sweepWindow = 10;
+  const recent = sweeps.filter((s) =>
+    s.type === tradeDir &&
+    s.barIndex <= barIdx &&
+    s.barIndex >= barIdx - sweepWindow
+  );
+
+  if (recent.length === 0) {
+    return {
+      verdict: "no-sweep",
+      detail: `No ${tradeDir} liquidity sweep in the ${sweepWindow} bars before entry.`,
+      swept: false,
+    };
+  }
+
+  const best = recent[recent.length - 1];
+  const barsAgo = barIdx - best.barIndex;
+  return {
+    verdict: "swept",
+    detail: `${tradeDir === "bullish" ? "Bullish" : "Bearish"} liquidity sweep ${barsAgo} bar${barsAgo !== 1 ? "s" : ""} before entry — wick grabbed below ${best.swingPrice.toFixed(2)} (depth: ${best.wickDepth.toFixed(2)}).`,
+    swept: true,
+    sweepBar: best.barIndex,
+    swingPrice: best.swingPrice,
+    barsAgo,
+  };
+}
+
 // ── S6: Session Context ─────────────────────────────────────────────────
 // Which trading session was the trade opened in? Uses broker GMT offset.
 // No candles needed — just the trade's open time.
@@ -342,20 +422,23 @@ export function precomputeSmcState(candles, lookback = 5) {
   const swings = detectSwings(candles, lookback);
   const structure = detectStructure(candles, swings);
   const orderBlocks = detectOrderBlocks(candles, structure);
-  return { swings, structure, orderBlocks };
+  const sweeps = detectLiquiditySweeps(candles, swings);
+  return { swings, structure, orderBlocks, sweeps };
 }
 
 export function computeTradeVerdicts(candles, trade, settings = {}, smcState = null) {
   const lookback = settings.swingLookback || 5;
-  const result = { s1: null, s2: null, s6: null };
+  const result = { s1: null, s2: null, s4: null, s6: null };
 
   if (candles && candles.length > 0) {
     // S1: Market Structure
     result.s1 = computeS1Verdict(candles, trade, lookback);
 
-    // S2: Order Block Confluence (uses precomputed state if available)
     if (smcState) {
+      // S2: Order Block Confluence
       result.s2 = computeS2Verdict(candles, trade, smcState.structure, smcState.orderBlocks, lookback);
+      // S4: Liquidity Sweep
+      result.s4 = computeS4Verdict(candles, trade, smcState.sweeps, lookback);
     }
   }
 
