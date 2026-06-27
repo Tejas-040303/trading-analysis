@@ -374,6 +374,33 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
       if (ddPct > maxDrawdownPct) maxDrawdownPct = ddPct;
     }
   });
+  // Session stats (GMT) — requires brokerGmtOffsetHours; null until the user sets it
+  // in Settings. Convert each trade's MT5 server hour (local wall-clock component) to
+  // GMT via the offset, then bucket into Asian / London / New York / off-hours.
+  let sessionStats = null;
+  if (settings.brokerGmtOffsetHours != null) {
+    const offset = Number(settings.brokerGmtOffsetHours) || 0;
+    const sessions = [
+      { session: "Asian", lo: 0, hi: 8 },
+      { session: "London", lo: 8, hi: 13 },
+      { session: "New York", lo: 13, hi: 21 },
+      { session: "Off-hours", lo: 21, hi: 24 },
+    ];
+    sessionStats = sessions.map((s) => {
+      const trades = pos.filter((p) => {
+        let gmtHour = (p.openTime.getHours() - offset) % 24;
+        if (gmtHour < 0) gmtHour += 24;
+        return gmtHour >= s.lo && gmtHour < s.hi;
+      });
+      const w = trades.filter((t) => t.profit > 0).length;
+      return {
+        session: s.session,
+        trades: trades.length,
+        profit: round2(trades.reduce((a, t) => a + t.profit, 0)),
+        winRate: trades.length ? round1((w / trades.length) * 100) : 0,
+      };
+    });
+  }
   const roiPct = depositsTotal > 0 ? (netProfit / depositsTotal) * 100 : null;
 
   return {
@@ -398,6 +425,7 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     shortCount: shortTrades.length,
     longCount: longTrades.length,
     dowStats,
+    sessionStats,
     symbolStats,
     tiltClusters: tiltClusters.sort((a, b) => new Date(b.start) - new Date(a.start)),
     revengeCount,
@@ -492,6 +520,78 @@ const axisProps = {
   axisLine: { stroke: C.border },
   tickLine: { stroke: C.border },
 };
+
+function CalendarHeatmap({ days }) {
+  if (!days.length) return null;
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const maxAbs = Math.max(1, ...days.map((d) => Math.abs(d.profit)));
+  const cellColor = (d) => {
+    if (!d || d.trades === 0) return C.panelAlt;
+    const intensity = 0.2 + 0.8 * Math.min(1, Math.abs(d.profit) / maxAbs);
+    const rgb = d.profit >= 0 ? "57,194,154" : "229,105,122";
+    return `rgba(${rgb},${intensity})`;
+  };
+  const months = [];
+  const start = new Date(days[0].date + "T00:00:00");
+  start.setDate(1);
+  const end = new Date(days[days.length - 1].date + "T00:00:00");
+  end.setDate(1);
+  for (let c = new Date(start); c <= end; c.setMonth(c.getMonth() + 1)) months.push(new Date(c));
+  const dowLabels = ["S", "M", "T", "W", "T", "F", "S"];
+  return (
+    <div className="flex flex-wrap" style={{ gap: 20 }}>
+      {months.map((m, mi) => {
+        const y = m.getFullYear();
+        const mo = m.getMonth();
+        const firstDow = new Date(y, mo, 1).getDay();
+        const daysInMonth = new Date(y, mo + 1, 0).getDate();
+        const cells = [];
+        for (let i = 0; i < firstDow; i++) cells.push(null);
+        for (let d = 1; d <= daysInMonth; d++) {
+          const key = `${y}-${String(mo + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          cells.push({ d, key, data: byDate.get(key) });
+        }
+        return (
+          <div key={mi}>
+            <div className="text-xs mb-1.5" style={{ color: C.textMuted }}>
+              {m.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(7, 22px)", gap: 3 }}>
+              {dowLabels.map((x, i) => (
+                <div key={"h" + i} className="text-center" style={{ fontSize: 9, color: C.textFaint }}>{x}</div>
+              ))}
+              {cells.map((c, ci) =>
+                c == null ? (
+                  <div key={ci} />
+                ) : (
+                  <div
+                    key={ci}
+                    title={c.data ? `${c.key}: ${fmtMoney(c.data.profit)} · ${c.data.trades} trades` : c.key}
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 4,
+                      background: cellColor(c.data),
+                      border: c.data && c.data.hasTiltCluster ? `1px solid ${C.amber}` : `0.5px solid ${C.border}`,
+                      fontSize: 9,
+                      color: c.data && c.data.trades ? "rgba(230,237,245,0.7)" : C.textFaint,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontFamily: "'JetBrains Mono', monospace",
+                    }}
+                  >
+                    {c.d}
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
   const [draft, setDraft] = useState(settings);
@@ -996,6 +1096,41 @@ export default function TradingJournal() {
             </Bar>
           </BarChart>
         </ChartCard>
+      </div>
+
+      {a.sessionStats ? (
+        <div className="mb-6">
+          <ChartCard title="Net P/L by trading session (GMT)" height={220}>
+            <BarChart data={a.sessionStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="session" {...axisProps} />
+              <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
+              <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades · ${p?.[0]?.payload?.winRate ?? 0}% win`} />
+              <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
+                {a.sessionStats.map((d, i) => (
+                  <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ChartCard>
+        </div>
+      ) : (
+        <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>Session view (Asian / London / New York)</span>
+          <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+            Set your broker's GMT offset in <span style={{ color: C.amber }}>Settings</span> to split your P/L by trading session — MT5 server time isn't GMT, so the offset is needed to label sessions correctly.
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+        <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Calendar</div>
+        <div style={{ overflowX: "auto" }}>
+          <CalendarHeatmap days={a.dailyStats} />
+        </div>
+        <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+          Each cell is a trading day, shaded green (profit) or red (loss) by size. Amber border = a tilt-cluster day.
+        </div>
       </div>
 
       <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
