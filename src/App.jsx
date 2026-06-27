@@ -1099,6 +1099,7 @@ export default function TradingJournal() {
     const s2 = { atOB: [], nearOB: [], noOB: [], noData: [] };
     const s3 = { atFVG: [], nearFVG: [], noFVG: [], noData: [] };
     const s4 = { swept: [], noSweep: [], noData: [] };
+    const s5 = { atPoc: [], inVa: [], outsideVa: [], noData: [] };
     const s6 = {};
     for (const t of analytics.tradesList) {
       const v = tradeVerdicts[t.ticket];
@@ -1125,6 +1126,12 @@ export default function TradingJournal() {
       else if (v.s4.verdict === "swept") s4.swept.push(t);
       else if (v.s4.verdict === "no-sweep") s4.noSweep.push(t);
       else s4.noData.push(t);
+      // S5
+      if (!v || !v.s5) { s5.noData.push(t); }
+      else if (v.s5.verdict === "at-poc") s5.atPoc.push(t);
+      else if (v.s5.verdict === "in-va") s5.inVa.push(t);
+      else if (v.s5.verdict === "outside-va") s5.outsideVa.push(t);
+      else s5.noData.push(t);
       // S6
       if (v && v.s6 && v.s6.session) {
         if (!s6[v.s6.session]) s6[v.s6.session] = [];
@@ -1140,6 +1147,7 @@ export default function TradingJournal() {
       s2: { atOB: stats(s2.atOB), nearOB: stats(s2.nearOB), noOB: stats(s2.noOB), noData: stats(s2.noData) },
       s3: { atFVG: stats(s3.atFVG), nearFVG: stats(s3.nearFVG), noFVG: stats(s3.noFVG), noData: stats(s3.noData) },
       s4: { swept: stats(s4.swept), noSweep: stats(s4.noSweep), noData: stats(s4.noData) },
+      s5: { atPoc: stats(s5.atPoc), inVa: stats(s5.inVa), outsideVa: stats(s5.outsideVa), noData: stats(s5.noData) },
       s6: Object.fromEntries(Object.entries(s6).map(([k, v]) => [k, stats(v)])),
     };
   }, [analytics, tradeVerdicts]);
@@ -1854,6 +1862,12 @@ export default function TradingJournal() {
                                     <div className="text-xs" style={{ color: v.s4.swept ? C.emerald : C.text }}>{v.s4.detail}</div>
                                   </div>
                                 )}
+                                {v && v.s5 && v.s5.verdict !== "insufficient" && (
+                                  <div className="mt-2">
+                                    <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S5 — Volume Profile</div>
+                                    <div className="text-xs" style={{ color: v.s5.zone === "poc" ? C.emerald : v.s5.zone === "value-area" ? C.amber : C.text }}>{v.s5.detail}</div>
+                                  </div>
+                                )}
                                 {s6 && s6.session && (
                                   <div className="text-xs mt-2" style={{ color: C.textFaint }}>
                                     S6 — Session: <span style={{ color: C.amber }}>{s6.session}</span>
@@ -2035,6 +2049,37 @@ export default function TradingJournal() {
             </div>
           )}
 
+          {/* S5 Impact breakdown */}
+          {strategyImpact && hasCandleData && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs font-mono" style={{ color: C.amber }}>S5</span>
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Volume Profile — Impact</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                {[
+                  { label: "At POC", data: strategyImpact.s5.atPoc, color: C.emerald },
+                  { label: "In Value Area", data: strategyImpact.s5.inVa, color: C.amber },
+                  { label: "Outside Value Area", data: strategyImpact.s5.outsideVa, color: C.rose },
+                  { label: "No data", data: strategyImpact.s5.noData, color: C.textFaint },
+                ].map((g) => (
+                  <div key={g.label} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                    <div className="text-xs mb-1" style={{ color: g.color }}>{g.label}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: g.data.pl >= 0 ? C.emerald : C.rose }}>
+                      {fmtMoney(g.data.pl)}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                      {g.data.n} trades · {g.data.winRate}% win
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs" style={{ color: C.textFaint }}>
+                POC = Point of Control (highest-volume price in the last 200 bars). Value Area = 70% of volume concentrated between VAL and VAH. Entries at POC trade at the fairest price; entries outside the VA are in low-volume territory where price moves faster. Note: uses tick volume as a proxy — an approximation, not real exchange volume.
+              </div>
+            </div>
+          )}
+
           {/* S6 Impact breakdown */}
           {strategyImpact && Object.keys(strategyImpact.s6).length > 0 && (
             <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
@@ -2073,7 +2118,7 @@ export default function TradingJournal() {
                 { id: "S2", name: "Order Blocks", desc: "Entry at opposing-candle zones", active: hasCandleData, color: C.emerald },
                 { id: "S3", name: "Fair Value Gaps", desc: "3-candle imbalance zones", active: hasCandleData, color: C.emerald },
                 { id: "S4", name: "Liquidity Sweeps", desc: "Wick-through-swing reversals", active: hasCandleData, color: C.emerald },
-                { id: "S5", name: "Volume Profile", desc: "POC / VAH / VAL levels", active: false, color: C.textFaint },
+                { id: "S5", name: "Volume Profile", desc: "POC / VAH / VAL levels", active: hasCandleData, color: C.amber },
                 { id: "S6", name: "Session Context", desc: "Asian / London / New York", active: settings.brokerGmtOffsetHours != null, color: C.amber },
               ].map((s) => (
                 <div key={s.id} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}`, opacity: s.active ? 1 : 0.5 }}>
