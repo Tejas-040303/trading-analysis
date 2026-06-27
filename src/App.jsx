@@ -787,6 +787,7 @@ export default function TradingJournal() {
   const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
   const [tradeSort, setTradeSort] = useState({ col: "openTime", dir: "desc" });
   const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "" });
+  const [dailySort, setDailySort] = useState({ col: "date", dir: "desc" });
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
   const candleInputRef = useRef(null);
@@ -1111,6 +1112,27 @@ export default function TradingJournal() {
   }, [analytics, tradeVerdicts]);
 
   const toggleSort = (col) => setTradeSort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  const toggleDailySort = (col) => setDailySort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  const sortedDaily = useMemo(() => {
+    if (!analytics) return [];
+    const list = [...analytics.dailyStats];
+    const dir = dailySort.dir === "asc" ? 1 : -1;
+    list.sort((a, b) => {
+      let va, vb;
+      switch (dailySort.col) {
+        case "date": va = a.date; vb = b.date; break;
+        case "trades": va = a.trades; vb = b.trades; break;
+        case "winRate": va = a.winRate; vb = b.winRate; break;
+        case "profit": va = a.profit; vb = b.profit; break;
+        case "status": va = a.hasTiltCluster ? 2 : a.overtrading ? 1 : 0; vb = b.hasTiltCluster ? 2 : b.overtrading ? 1 : 0; break;
+        default: va = a.date; vb = b.date;
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return list;
+  }, [analytics, dailySort]);
   const setRange = (days) => {
     if (!analytics || !analytics.dailyStats.length) return;
     if (days === 0) { setChartRange({ from: "", to: "" }); return; }
@@ -1334,6 +1356,33 @@ export default function TradingJournal() {
       {/* ── Dashboard tab ──────────────────────────────────────────── */}
       {activeTab === "dashboard" && (
         <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
+            <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
+            <StatCard icon={Wallet} label="Current balance" value={fmtMoney(a.currentBalance)} sub={`ROI ${fmtPct(a.roiPct)}`} />
+            <StatCard icon={AlertTriangle} label="Max drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={a.maxDrawdownAmt > 0 ? `${fmtMoney(-a.maxDrawdownAmt)} peak-to-trough` : `${a.daysTracked} active days`} />
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <StatCard icon={Calendar} label="Gross profit" value={fmtMoney(a.grossProfit)} tone="good" />
+            <StatCard icon={Calendar} label="Gross loss" value={fmtMoney(a.grossLoss)} tone="bad" />
+            <StatCard icon={Percent} label="Largest win" value={fmtMoney(a.largestWin)} tone="good" />
+            <StatCard icon={Percent} label="Largest loss" value={fmtMoney(a.largestLoss)} tone="bad" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.emeraldDim}` }}>
+              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held 3+ minutes</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.emerald }}>{fmtMoney(a.longNet)}</div>
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.longCount} trades — patient, setup-based entries</div>
+            </div>
+            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.roseDim}` }}>
+              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held under 3 minutes</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.rose }}>{fmtMoney(a.shortNet)}</div>
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.shortCount} trades — impulsive, quick in-and-out</div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 mb-4 flex-wrap rounded-lg p-2" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
             <span className="text-xs" style={{ color: C.textMuted }}>Range:</span>
             {[{ label: "7d", d: 7 }, { label: "14d", d: 14 }, { label: "30d", d: 30 }, { label: "All", d: 0 }].map((r) => (
@@ -1361,33 +1410,6 @@ export default function TradingJournal() {
               <button onClick={() => setChartRange({ from: "", to: "" })} className="text-xs px-2 py-1 rounded" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
             )}
             {chartRange.from && <span className="text-xs" style={{ color: C.textFaint }}>Showing {filteredDaily.length} of {a.dailyStats.length} days</span>}
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
-            <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
-            <StatCard icon={Wallet} label="Current balance" value={fmtMoney(a.currentBalance)} sub={`ROI ${fmtPct(a.roiPct)}`} />
-            <StatCard icon={AlertTriangle} label="Max drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={a.maxDrawdownAmt > 0 ? `${fmtMoney(-a.maxDrawdownAmt)} peak-to-trough` : `${a.daysTracked} active days`} />
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            <StatCard icon={Calendar} label="Gross profit" value={fmtMoney(a.grossProfit)} tone="good" />
-            <StatCard icon={Calendar} label="Gross loss" value={fmtMoney(a.grossLoss)} tone="bad" />
-            <StatCard icon={Percent} label="Largest win" value={fmtMoney(a.largestWin)} tone="good" />
-            <StatCard icon={Percent} label="Largest loss" value={fmtMoney(a.largestLoss)} tone="bad" />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
-            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.emeraldDim}` }}>
-              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held 3+ minutes</div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.emerald }}>{fmtMoney(a.longNet)}</div>
-              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.longCount} trades — patient, setup-based entries</div>
-            </div>
-            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.roseDim}` }}>
-              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held under 3 minutes</div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.rose }}>{fmtMoney(a.shortNet)}</div>
-              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.shortCount} trades — impulsive, quick in-and-out</div>
-            </div>
           </div>
 
           <div className="mb-4">
@@ -1576,49 +1598,62 @@ export default function TradingJournal() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             <div className="rounded-xl p-4 lg:col-span-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
               <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>By symbol</div>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr style={{ color: C.textFaint }}>
-                    <th className="text-left pb-2 text-xs">Symbol</th>
-                    <th className="text-right pb-2 text-xs">N</th>
-                    <th className="text-right pb-2 text-xs">Win%</th>
-                    <th className="text-right pb-2 text-xs">P/L</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {a.symbolStats.map((s) => (
-                    <tr key={s.symbol} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                      <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
-                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.n}</td>
-                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.winRate}%</td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: s.netPl >= 0 ? C.emerald : C.rose }}>{fmtMoney(s.netPl)}</td>
+              <div style={{ overflow: "auto", maxHeight: 320 }}>
+                <table className="text-sm" style={{ minWidth: 280, width: "100%" }}>
+                  <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
+                    <tr style={{ color: C.textFaint }}>
+                      <th className="text-left pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Symbol</th>
+                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>N</th>
+                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Win%</th>
+                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>P/L</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {a.symbolStats.map((s) => (
+                      <tr key={s.symbol} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                        <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
+                        <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.n}</td>
+                        <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.winRate}%</td>
+                        <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: s.netPl >= 0 ? C.emerald : C.rose }}>{fmtMoney(s.netPl)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="rounded-xl p-4 lg:col-span-2" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
               <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Daily breakdown</div>
-              <div style={{ maxHeight: 280, overflowY: "auto" }}>
-                <table className="w-full text-sm">
-                  <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+              <div style={{ maxHeight: 320, overflow: "auto" }}>
+                <table className="text-sm" style={{ minWidth: 480, width: "100%" }}>
+                  <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                     <tr style={{ color: C.textFaint }}>
-                      <th className="text-left pb-2 text-xs">Date</th>
-                      <th className="text-right pb-2 text-xs">Trades</th>
-                      <th className="text-right pb-2 text-xs">Win%</th>
-                      <th className="text-right pb-2 text-xs">P/L</th>
-                      <th className="text-right pb-2 text-xs">Status</th>
+                      {[
+                        { col: "date", label: "Date", align: "text-left" },
+                        { col: "trades", label: "Trades", align: "text-right" },
+                        { col: "winRate", label: "Win%", align: "text-right" },
+                        { col: "profit", label: "P/L", align: "text-right" },
+                        { col: "status", label: "Status", align: "text-right" },
+                      ].map((h) => (
+                        <th
+                          key={h.col}
+                          className={`${h.align} pb-2 text-xs`}
+                          style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", resize: "horizontal", overflow: "hidden" }}
+                          onClick={() => toggleDailySort(h.col)}
+                        >
+                          {h.label} {dailySort.col === h.col ? (dailySort.dir === "asc" ? "↑" : "↓") : ""}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {a.dailyStats.slice().reverse().map((d) => {
+                    {sortedDaily.map((d) => {
                       const stripe = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
                       const statusText = d.hasTiltCluster ? "Tilt" : d.overtrading ? "Busy" : "Calm";
                       const statusColor = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
                       return (
                         <tr key={d.date} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                          <td className="py-1.5" style={{ color: C.text, borderLeft: `3px solid ${stripe}`, paddingLeft: 8 }}>{fmtDateLabel(d.date)}</td>
+                          <td className="py-1.5" style={{ color: C.text, borderLeft: `3px solid ${stripe}`, paddingLeft: 8, whiteSpace: "nowrap" }}>{fmtDateLabel(d.date)}</td>
                           <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.trades}</td>
                           <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.winRate}%</td>
                           <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: d.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(d.profit)}</td>
@@ -1682,16 +1717,16 @@ export default function TradingJournal() {
                       { col: "profit", label: "P/L", align: "text-right" },
                       { col: "r", label: "R", align: "text-right" },
                     ].map((h) => (
-                      <th key={h.col} className={`${h.align} pb-2 text-xs`} style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }} onClick={() => toggleSort(h.col)}>
+                      <th key={h.col} className={`${h.align} pb-2 text-xs`} style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort(h.col)}>
                         {h.label} {tradeSort.col === h.col ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     ))}
                     {hasCandleData && (
-                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleSort("structure")}>
+                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("structure")}>
                         Structure {tradeSort.col === "structure" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     )}
-                    <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140 }}>Note</th>
+                    <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140, resize: "horizontal", overflow: "hidden" }}>Note</th>
                   </tr>
                 </thead>
                 <tbody>
