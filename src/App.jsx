@@ -6,20 +6,19 @@ import {
 import {
   UploadCloud, RotateCcw, AlertTriangle, TrendingUp, TrendingDown,
   CircleCheck, Flame, Wallet, Target, Percent, Calendar,
+  Settings, Download, Upload, X,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { storage } from "./lib/storage";
 
-const OVERTRADE_THRESHOLD = 15;
-const REVENGE_WINDOW_MIN = 3;
-const TILT_STREAK_MIN = 3;
-
-// Only trades on/after this date count toward the main analysis. Earlier trades
-// (TJ's beginner era — the ~$55 January account that was blown while learning)
-// are summarized separately, not mixed into the serious-trading stats.
-// TODO(Phase 2 Settings): make this an editable "serious start date" setting.
-const SERIOUS_START = new Date(2026, 4, 28, 0, 0, 0); // May 28, 2026, local time
-const SERIOUS_START_LABEL = "May 28, 2026";
+// User-editable settings, persisted to tj_settings via the Settings panel.
+const DEFAULT_SETTINGS = {
+  overtradeThreshold: 15,     // trades/day at or above which a day is flagged "Busy"
+  tiltStreakMin: 3,           // consecutive losses that make a tilt cluster
+  revengeWindowMin: 3,        // minutes: a same-symbol re-entry after a loss within this is "revenge"
+  brokerGmtOffsetHours: null, // reserved for the upcoming session view (Asian/London/NY)
+  seriousStart: "2026-05-28", // YYYY-MM-DD; trades before this are archived as the beginner era
+};
 
 const C = {
   bg: "#04070D",
@@ -151,7 +150,7 @@ function parseWorkbookRows(rows) {
   return { positions, balanceOps, meta };
 }
 
-function computeAnalytics(rawPositions, rawBalanceOps) {
+function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTINGS) {
   if (!rawPositions.length) return null;
   const pos = rawPositions
     .map((p) => {
@@ -173,7 +172,7 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
   dailyMap.forEach((dayTrades, dateStr) => {
     let streak = [];
     const flush = () => {
-      if (streak.length >= TILT_STREAK_MIN) {
+      if (streak.length >= settings.tiltStreakMin) {
         const pl = streak.reduce((s, t) => s + t.profit, 0);
         let lotEsc = false;
         for (let i = 1; i < streak.length; i++) if (streak[i].volume > streak[i - 1].volume) lotEsc = true;
@@ -200,7 +199,7 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
   pos.forEach((p) => {
     if (prev) {
       const gap = (p.openTime - prev.closeTime) / 60000;
-      if (prev.profit < 0 && gap <= REVENGE_WINDOW_MIN && gap >= 0 && p.symbol === prev.symbol) {
+      if (prev.profit < 0 && gap <= settings.revengeWindowMin && gap >= 0 && p.symbol === prev.symbol) {
         revengeCount++;
         revengePl += p.profit;
       }
@@ -217,7 +216,7 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
         trades: trades.length,
         profit: round2(profit),
         winRate: round1((wins / trades.length) * 100),
-        overtrading: trades.length >= OVERTRADE_THRESHOLD,
+        overtrading: trades.length >= settings.overtradeThreshold,
         hasTiltCluster: tiltDates.has(date),
       };
     })
@@ -463,6 +462,104 @@ const axisProps = {
   tickLine: { stroke: C.border },
 };
 
+function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
+  const [draft, setDraft] = useState(settings);
+  const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  const fieldStyle = {
+    background: C.panelAlt,
+    border: `0.5px solid ${C.border}`,
+    color: C.text,
+    borderRadius: 8,
+    padding: "6px 10px",
+    fontSize: 14,
+    width: "100%",
+    fontFamily: "'JetBrains Mono', monospace",
+  };
+  const btn = (bg, color, border) => ({
+    background: bg,
+    color,
+    border: border || "none",
+    borderRadius: 8,
+    padding: "6px 12px",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+  });
+  const numRow = (k, label, hint) => (
+    <div className="mb-4">
+      <div className="text-sm mb-1" style={{ color: C.text }}>{label}</div>
+      {hint && <div className="text-xs mb-1.5" style={{ color: C.textFaint }}>{hint}</div>}
+      <input
+        type="number"
+        value={draft[k] ?? ""}
+        onChange={(e) => set(k, e.target.value === "" ? "" : Number(e.target.value))}
+        style={fieldStyle}
+      />
+    </div>
+  );
+  const save = () => {
+    const num = (v, d) => (v === "" || v == null || Number.isNaN(Number(v)) ? d : Number(v));
+    onSave({
+      seriousStart: draft.seriousStart || DEFAULT_SETTINGS.seriousStart,
+      overtradeThreshold: num(draft.overtradeThreshold, DEFAULT_SETTINGS.overtradeThreshold),
+      tiltStreakMin: num(draft.tiltStreakMin, DEFAULT_SETTINGS.tiltStreakMin),
+      revengeWindowMin: num(draft.revengeWindowMin, DEFAULT_SETTINGS.revengeWindowMin),
+      brokerGmtOffsetHours:
+        draft.brokerGmtOffsetHours === "" || draft.brokerGmtOffsetHours == null
+          ? null
+          : Number(draft.brokerGmtOffsetHours),
+    });
+  };
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(2,4,8,0.7)", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, overflowY: "auto" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rounded-2xl"
+        style={{ background: C.panel, border: `0.5px solid ${C.border}`, width: "100%", maxWidth: 460, marginTop: 32, marginBottom: 32, padding: 20 }}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <span style={{ color: C.text, fontWeight: 600, fontSize: 17, fontFamily: "'Space Grotesk', sans-serif" }}>Settings</span>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textMuted, cursor: "pointer" }} title="Close"><X size={18} /></button>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-sm mb-1" style={{ color: C.text }}>Serious-trading start date</div>
+          <div className="text-xs mb-1.5" style={{ color: C.textFaint }}>Trades before this are archived as your beginner era and excluded from the stats.</div>
+          <input type="date" value={draft.seriousStart || ""} onChange={(e) => set("seriousStart", e.target.value)} style={fieldStyle} />
+        </div>
+
+        {numRow("overtradeThreshold", "Overtrade threshold", 'Trades in a day at or above this flag the day as "Busy".')}
+        {numRow("tiltStreakMin", "Tilt streak", "Consecutive losing trades that count as a tilt cluster.")}
+        {numRow("revengeWindowMin", "Revenge window (minutes)", "A same-symbol re-entry within this many minutes of a loss is flagged as revenge.")}
+        {numRow("brokerGmtOffsetHours", "Broker GMT offset (hours)", "Your MT5 server's offset from GMT. Reserved for the upcoming session view; leave blank if unsure.")}
+
+        <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
+          <div className="text-sm mb-1" style={{ color: C.text }}>Backup</div>
+          <div className="text-xs mb-2" style={{ color: C.textFaint }}>Your data lives only in this browser. Export a JSON backup, or import one to restore it after a cache clear or on another device.</div>
+          <div className="flex gap-2">
+            <button onClick={onExport} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Download size={14} /> Export JSON</button>
+            <button onClick={onImportClick} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Upload size={14} /> Import JSON</button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mt-5">
+          <button onClick={() => setDraft({ ...DEFAULT_SETTINGS })} style={{ background: "transparent", border: "none", color: C.textFaint, fontSize: 13, cursor: "pointer" }}>Reset to defaults</button>
+          <div className="flex gap-2">
+            <button onClick={onClose} style={btn("transparent", C.textMuted, `0.5px solid ${C.border}`)}>Cancel</button>
+            <button onClick={save} style={btn(C.amber, "#2A1A02")}>Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TradingJournal() {
   const [positions, setPositions] = useState([]);
   const [balanceOps, setBalanceOps] = useState([]);
@@ -473,7 +570,10 @@ export default function TradingJournal() {
   const [uploadError, setUploadError] = useState(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [showSettings, setShowSettings] = useState(false);
   const fileInputRef = useRef(null);
+  const importInputRef = useRef(null);
 
   useEffect(() => {
     if (document.getElementById("tj-fonts")) return;
@@ -484,14 +584,17 @@ export default function TradingJournal() {
     document.head.appendChild(link);
   }, []);
 
+  function loadStateFromStorage() {
+    // Load persisted state from localStorage (replaces the prototype's window.storage).
+    setPositions(storage.get("tj_positions") || []);
+    setBalanceOps(storage.get("tj_balance_ops") || []);
+    setAccountMeta(storage.get("tj_account_meta") || null);
+    setLastUpdated(storage.get("tj_last_updated") || null);
+    setSettings({ ...DEFAULT_SETTINGS, ...(storage.get("tj_settings") || {}) });
+  }
+
   useEffect(() => {
-    // Load persisted data from localStorage (replaces the prototype's window.storage).
-    let pos = [], bal = [], meta = null, lu = null;
-    try { const r = storage.get("tj_positions"); if (r) pos = r; } catch (e) {}
-    try { const r = storage.get("tj_balance_ops"); if (r) bal = r; } catch (e) {}
-    try { const r = storage.get("tj_account_meta"); if (r) meta = r; } catch (e) {}
-    try { const r = storage.get("tj_last_updated"); if (r) lu = r; } catch (e) {}
-    setPositions(pos); setBalanceOps(bal); setAccountMeta(meta); setLastUpdated(lu);
+    loadStateFromStorage();
     setInitializing(false);
   }, []);
 
@@ -552,17 +655,78 @@ export default function TradingJournal() {
     } catch (e) {}
   }
 
+  function saveSettings(next) {
+    setSettings(next);
+    try { storage.set("tj_settings", next); } catch (e) {}
+    setShowSettings(false);
+  }
+
+  function exportData() {
+    const keys = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("tj_")) keys[k] = localStorage.getItem(k);
+    }
+    const payload = { app: "trading-journal", exportedAt: new Date().toISOString(), keys };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("a");
+    el.href = url;
+    el.download = `trading-journal-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(el);
+    el.click();
+    document.body.removeChild(el);
+    URL.revokeObjectURL(url);
+  }
+
+  async function importData(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const keys = parsed && parsed.keys && typeof parsed.keys === "object" ? parsed.keys : parsed;
+      let wrote = 0;
+      Object.entries(keys || {}).forEach(([k, v]) => {
+        if (!k.startsWith("tj_")) return;
+        localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
+        wrote++;
+      });
+      if (!wrote) throw new Error("no tj_ keys");
+      loadStateFromStorage();
+      setShowSettings(false);
+      setUploadError(null);
+    } catch (e) {
+      setUploadError("Could not import that file — make sure it's a JSON backup exported from this app.");
+    }
+  }
+
   const { analytics, prior } = useMemo(() => {
-    const cutoff = SERIOUS_START.getTime();
+    const cutoff = new Date(settings.seriousStart + "T00:00:00").getTime();
     const mainPos = positions.filter((p) => new Date(p.openTime).getTime() >= cutoff);
     const priorPos = positions.filter((p) => new Date(p.openTime).getTime() < cutoff);
     const mainBal = balanceOps.filter((b) => new Date(b.time).getTime() >= cutoff);
     const priorBal = balanceOps.filter((b) => new Date(b.time).getTime() < cutoff);
     return {
-      analytics: computeAnalytics(mainPos, mainBal),
+      analytics: computeAnalytics(mainPos, mainBal, settings),
       prior: summarizePrior(priorPos, priorBal),
     };
-  }, [positions, balanceOps]);
+  }, [positions, balanceOps, settings]);
+
+  const seriousLabel = new Date(settings.seriousStart + "T00:00:00").toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const settingsModal = showSettings && (
+    <SettingsModal
+      settings={settings}
+      onSave={saveSettings}
+      onClose={() => setShowSettings(false)}
+      onExport={exportData}
+      onImportClick={() => importInputRef.current?.click()}
+    />
+  );
 
   const headerNode = (
     <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
@@ -589,6 +753,14 @@ export default function TradingJournal() {
         >
           <UploadCloud size={14} /> Upload report{positions.length ? "s" : ""}
         </button>
+        <button
+          onClick={() => setShowSettings(true)}
+          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
+          style={{ background: "transparent", color: C.textMuted, border: `0.5px solid ${C.border}` }}
+          title="Settings & backup"
+        >
+          <Settings size={14} /> Settings
+        </button>
         {positions.length > 0 && !confirmingReset && (
           <button
             onClick={() => setConfirmingReset(true)}
@@ -606,6 +778,7 @@ export default function TradingJournal() {
           </div>
         )}
         <input ref={fileInputRef} type="file" accept=".xlsx" multiple className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+        <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
       </div>
     </div>
   );
@@ -637,7 +810,7 @@ export default function TradingJournal() {
   const priorSection = prior && (
     <div className="rounded-xl p-4 mb-6" style={{ background: C.panelAlt, border: `1px dashed ${C.border}` }}>
       <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Before {SERIOUS_START_LABEL} — beginner era</span>
+        <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Before {seriousLabel} — beginner era</span>
         <span className="text-xs" style={{ color: C.textFaint }}>(excluded from the analysis above)</span>
       </div>
       <div className="text-xs mb-3" style={{ color: C.textFaint }}>
@@ -684,11 +857,12 @@ export default function TradingJournal() {
         {headerNode}
         {prior && (
           <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.amber, background: C.panelAlt }}>
-            No trades on or after {SERIOUS_START_LABEL} in your uploaded data yet — upload reports from {SERIOUS_START_LABEL} onward to populate the dashboard. Your earlier history is shown below.
+            No trades on or after {seriousLabel} in your uploaded data yet — upload reports from {seriousLabel} onward to populate the dashboard. Your earlier history is shown below.
           </div>
         )}
         {prior ? priorSection : dropzone}
         {uploadError && <div className="text-sm mt-3" style={{ color: C.rose }}>{uploadError}</div>}
+        {settingsModal}
       </div>
     );
   }
@@ -700,7 +874,7 @@ export default function TradingJournal() {
       {headerNode}
 
       <div className="text-xs mb-4" style={{ color: C.textFaint }}>
-        Showing {a.totalTrades} trades since {SERIOUS_START_LABEL}.{prior ? " Your earlier beginner-era history is archived at the bottom." : ""}
+        Showing {a.totalTrades} trades since {seriousLabel}.{prior ? " Your earlier beginner-era history is archived at the bottom." : ""}
       </div>
 
       {uploadError && (
@@ -759,7 +933,7 @@ export default function TradingJournal() {
           </ComposedChart>
         </ChartCard>
         <div className="text-xs mt-2" style={{ color: C.textFaint }}>
-          Amber outline = a same-day tilt cluster (3+ losses in a row) happened that day.
+          Amber outline = a same-day tilt cluster ({settings.tiltStreakMin}+ losses in a row) happened that day.
         </div>
       </div>
 
@@ -796,11 +970,11 @@ export default function TradingJournal() {
         <div className="flex items-center gap-2 mb-3">
           <Flame size={15} style={{ color: C.amber }} />
           <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Tilt clusters detected</span>
-          <span className="text-xs" style={{ color: C.textFaint }}>(3+ same-day losses in a row, plus quick same-symbol re-entries)</span>
+          <span className="text-xs" style={{ color: C.textFaint }}>({settings.tiltStreakMin}+ same-day losses in a row, plus quick same-symbol re-entries)</span>
         </div>
         {a.revengeCount > 0 && (
           <div className="text-xs mb-3" style={{ color: C.textFaint }}>
-            Also: {a.revengeCount} re-entries within {REVENGE_WINDOW_MIN} min of a loss on the same symbol, net {fmtMoney(a.revengePl)}.
+            Also: {a.revengeCount} re-entries within {settings.revengeWindowMin} min of a loss on the same symbol, net {fmtMoney(a.revengePl)}.
           </div>
         )}
         {a.tiltClusters.length === 0 ? (
@@ -938,7 +1112,7 @@ export default function TradingJournal() {
 
       <div className="rounded-xl p-4 mb-2" style={{ border: `0.5px solid ${C.border}` }}>
         <div className="text-xs leading-relaxed" style={{ color: C.textFaint }}>
-          Calm = under {OVERTRADE_THRESHOLD} trades that day. Busy = {OVERTRADE_THRESHOLD}+ trades. Tilt = at least {TILT_STREAK_MIN} losses
+          Calm = under {settings.overtradeThreshold} trades that day. Busy = {settings.overtradeThreshold}+ trades. Tilt = at least {settings.tiltStreakMin} losses
           in a row on the same day. Files are parsed entirely in your browser; the computed numbers are saved so this dashboard
           remembers your history the next time you open it. Upload new reports anytime — duplicate trades are matched and skipped
           by their MT5 ticket ID, so it's safe to re-upload the full history or just a recent slice.
@@ -946,6 +1120,7 @@ export default function TradingJournal() {
       </div>
 
       {priorSection}
+      {settingsModal}
     </div>
   );
 }
