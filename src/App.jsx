@@ -403,6 +403,49 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
   }
   const roiPct = depositsTotal > 0 ? (netProfit / depositsTotal) * 100 : null;
 
+  // R-multiples. Point value per symbol is derived empirically — the median of
+  // profit / (signedMove × volume) across that symbol's trades — so we never need
+  // hardcoded XM contract specs. Risk = |openPrice − sl| × volume × pointValue;
+  // R = profit / risk for trades that carried a stop.
+  const pvBySymbol = {};
+  symMap.forEach((trades, symbol) => {
+    const ests = [];
+    trades.forEach((t) => {
+      if (t.openPrice == null || t.closePrice == null || !t.volume) return;
+      const move = t.type === "sell" ? t.openPrice - t.closePrice : t.closePrice - t.openPrice;
+      if (Math.abs(move) < 1e-9) return;
+      const pv = t.profit / (move * t.volume);
+      if (Number.isFinite(pv) && pv > 0) ests.push(pv);
+    });
+    if (ests.length) {
+      ests.sort((x, y) => x - y);
+      pvBySymbol[symbol] = ests[Math.floor(ests.length / 2)];
+    }
+  });
+  const riskOf = (t) => {
+    const pv = pvBySymbol[t.symbol];
+    if (t.sl == null || t.openPrice == null || !t.volume || !pv) return null;
+    const risk = Math.abs(t.openPrice - t.sl) * t.volume * pv;
+    return risk > 0 ? risk : null;
+  };
+  const tradesList = pos
+    .map((t) => {
+      const risk = riskOf(t);
+      return {
+        ticket: t.ticket,
+        openTime: t.openTime.toISOString(),
+        symbol: t.symbol,
+        type: t.type,
+        durationMin: round1(t.durationMin),
+        profit: round2(t.profit),
+        r: risk ? round2(t.profit / risk) : null,
+        note: t.note || "",
+      };
+    })
+    .sort((a, b) => new Date(b.openTime) - new Date(a.openTime));
+  const rTrades = tradesList.filter((t) => t.r != null);
+  const avgR = rTrades.length ? round2(rTrades.reduce((s, t) => s + t.r, 0) / rTrades.length) : null;
+
   return {
     totalTrades: pos.length,
     winRate: round1((wins.length / pos.length) * 100),
@@ -430,6 +473,9 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     tiltClusters: tiltClusters.sort((a, b) => new Date(b.start) - new Date(a.start)),
     revengeCount,
     revengePl: round2(revengePl),
+    tradesList,
+    avgR,
+    rCount: rTrades.length,
     balanceOps: balanceOpsList,
     depositsSum,
     withdrawalsSum,
@@ -590,6 +636,28 @@ function CalendarHeatmap({ days }) {
         );
       })}
     </div>
+  );
+}
+
+function NoteInput({ value, onSave }) {
+  const [v, setV] = useState(value || "");
+  useEffect(() => { setV(value || ""); }, [value]);
+  return (
+    <input
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => { if (v !== (value || "")) onSave(v); }}
+      placeholder="Add note…"
+      style={{
+        width: "100%",
+        background: "transparent",
+        border: `0.5px solid ${C.borderSoft}`,
+        borderRadius: 6,
+        color: C.text,
+        fontSize: 12,
+        padding: "3px 6px",
+      }}
+    />
   );
 }
 
@@ -784,6 +852,14 @@ export default function TradingJournal() {
       storage.remove("tj_account_meta");
       storage.remove("tj_last_updated");
     } catch (e) {}
+  }
+
+  function saveNote(ticket, note) {
+    setPositions((prev) => {
+      const next = prev.map((p) => (p.ticket === ticket ? { ...p, note } : p));
+      try { storage.set("tj_positions", next); } catch (e) {}
+      return next;
+    });
   }
 
   function saveSettings(next) {
@@ -1222,6 +1298,49 @@ export default function TradingJournal() {
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Trades</span>
+          <span className="text-xs" style={{ color: C.textFaint }}>
+            ({a.tradesList.length})
+            {a.avgR != null && (
+              <> · avg <span style={{ color: a.avgR >= 0 ? C.emerald : C.rose, fontFamily: "'JetBrains Mono', monospace" }}>{a.avgR >= 0 ? "+" : ""}{a.avgR}R</span> over {a.rCount} with a stop</>
+            )}
+          </span>
+        </div>
+        <div style={{ maxHeight: 360, overflowY: "auto" }}>
+          <table className="w-full text-sm">
+            <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+              <tr style={{ color: C.textFaint }}>
+                <th className="text-left pb-2 text-xs">When</th>
+                <th className="text-left pb-2 text-xs">Symbol</th>
+                <th className="text-left pb-2 text-xs">Side</th>
+                <th className="text-right pb-2 text-xs">Hold</th>
+                <th className="text-right pb-2 text-xs">P/L</th>
+                <th className="text-right pb-2 text-xs">R</th>
+                <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 160 }}>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {a.tradesList.map((t) => (
+                <tr key={t.ticket} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                  <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
+                  <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
+                  <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
+                  <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
+                  <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
+                  <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
+                  <td className="py-1.5 pl-3"><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+          R = profit ÷ risk, where risk = stop distance × volume × an empirically-derived point value per symbol. Trades without a stop-loss show "—". Notes save when you click away.
         </div>
       </div>
 
