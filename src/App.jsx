@@ -14,6 +14,13 @@ const OVERTRADE_THRESHOLD = 15;
 const REVENGE_WINDOW_MIN = 3;
 const TILT_STREAK_MIN = 3;
 
+// Only trades on/after this date count toward the main analysis. Earlier trades
+// (TJ's beginner era — the ~$55 January account that was blown while learning)
+// are summarized separately, not mixed into the serious-trading stats.
+// TODO(Phase 2 Settings): make this an editable "serious start date" setting.
+const SERIOUS_START = new Date(2026, 4, 28, 0, 0, 0); // May 28, 2026, local time
+const SERIOUS_START_LABEL = "May 28, 2026";
+
 const C = {
   bg: "#04070D",
   panel: "#0B121C",
@@ -358,6 +365,31 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
   };
 }
 
+function summarizePrior(priorPositions, priorBalanceOps) {
+  if (!priorPositions.length && !priorBalanceOps.length) return null;
+  const net = priorPositions.reduce((s, p) => s + p.profit, 0);
+  const wins = priorPositions.filter((p) => p.profit > 0).length;
+  let deposits = 0;
+  let withdrawals = 0;
+  priorBalanceOps.forEach((b) => {
+    const c = (b.comment || "").toLowerCase();
+    if (c.includes("transfer to") || c.includes("transfer from")) return;
+    if (b.profit >= 0) deposits += b.profit;
+    else withdrawals += b.profit;
+  });
+  const times = priorPositions.map((p) => new Date(p.openTime).getTime());
+  return {
+    trades: priorPositions.length,
+    net: round2(net),
+    winRate: priorPositions.length ? round1((wins / priorPositions.length) * 100) : null,
+    deposits: round2(deposits),
+    withdrawals: round2(withdrawals),
+    ops: priorBalanceOps.length,
+    firstDate: times.length ? new Date(Math.min(...times)).toISOString() : null,
+    lastDate: times.length ? new Date(Math.max(...times)).toISOString() : null,
+  };
+}
+
 function StatCard({ icon: Icon, label, value, sub, tone }) {
   const toneColor = tone === "good" ? C.emerald : tone === "bad" ? C.rose : C.text;
   return (
@@ -504,7 +536,17 @@ export default function TradingJournal() {
     } catch (e) {}
   }
 
-  const analytics = useMemo(() => computeAnalytics(positions, balanceOps), [positions, balanceOps]);
+  const { analytics, prior } = useMemo(() => {
+    const cutoff = SERIOUS_START.getTime();
+    const mainPos = positions.filter((p) => new Date(p.openTime).getTime() >= cutoff);
+    const priorPos = positions.filter((p) => new Date(p.openTime).getTime() < cutoff);
+    const mainBal = balanceOps.filter((b) => new Date(b.time).getTime() >= cutoff);
+    const priorBal = balanceOps.filter((b) => new Date(b.time).getTime() < cutoff);
+    return {
+      analytics: computeAnalytics(mainPos, mainBal),
+      prior: summarizePrior(priorPos, priorBal),
+    };
+  }, [positions, balanceOps]);
 
   const headerNode = (
     <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
@@ -576,6 +618,46 @@ export default function TradingJournal() {
     </div>
   );
 
+  const priorSection = prior && (
+    <div className="rounded-xl p-4 mb-6" style={{ background: C.panelAlt, border: `1px dashed ${C.border}` }}>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Before {SERIOUS_START_LABEL} — beginner era</span>
+        <span className="text-xs" style={{ color: C.textFaint }}>(excluded from the analysis above)</span>
+      </div>
+      <div className="text-xs mb-3" style={{ color: C.textFaint }}>
+        Your early learning period — this account was funded and blown while starting out. Kept for the record, not counted in the stats above.
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-lg p-3" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <div className="text-xs mb-1" style={{ color: C.textFaint }}>Trades</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color: C.textMuted }}>
+            {prior.trades}{prior.winRate != null ? ` · ${prior.winRate}% win` : ""}
+          </div>
+        </div>
+        <div className="rounded-lg p-3" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <div className="text-xs mb-1" style={{ color: C.textFaint }}>Net P/L</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color: prior.net >= 0 ? C.emerald : C.rose }}>
+            {fmtMoney(prior.net)}
+          </div>
+        </div>
+        <div className="rounded-lg p-3" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <div className="text-xs mb-1" style={{ color: C.textFaint }}>Deposited then</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color: C.textMuted }}>
+            {fmtMoney(prior.deposits)}
+          </div>
+        </div>
+        <div className="rounded-lg p-3" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+          <div className="text-xs mb-1" style={{ color: C.textFaint }}>Period</div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: C.textMuted, paddingTop: 2 }}>
+            {prior.firstDate
+              ? `${new Date(prior.firstDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${new Date(prior.lastDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+              : "—"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   if (initializing) {
     return <div style={{ background: C.bg, minHeight: 400 }} className="p-8" />;
   }
@@ -584,7 +666,12 @@ export default function TradingJournal() {
     return (
       <div style={{ background: C.bg, color: C.text, minHeight: 480 }} className="rounded-2xl p-6 md:p-8">
         {headerNode}
-        {dropzone}
+        {prior && (
+          <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.amber, background: C.panelAlt }}>
+            No trades on or after {SERIOUS_START_LABEL} in your uploaded data yet — upload reports from {SERIOUS_START_LABEL} onward to populate the dashboard. Your earlier history is shown below.
+          </div>
+        )}
+        {prior ? priorSection : dropzone}
         {uploadError && <div className="text-sm mt-3" style={{ color: C.rose }}>{uploadError}</div>}
       </div>
     );
@@ -595,6 +682,10 @@ export default function TradingJournal() {
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: 480 }} className="rounded-2xl p-6 md:p-8">
       {headerNode}
+
+      <div className="text-xs mb-4" style={{ color: C.textFaint }}>
+        Showing {a.totalTrades} trades since {SERIOUS_START_LABEL}.{prior ? " Your earlier beginner-era history is archived at the bottom." : ""}
+      </div>
 
       {uploadError && (
         <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.rose, background: C.roseDim }}>{uploadError}</div>
@@ -837,6 +928,8 @@ export default function TradingJournal() {
           by their MT5 ticket ID, so it's safe to re-upload the full history or just a recent slice.
         </div>
       </div>
+
+      {priorSection}
     </div>
   );
 }
