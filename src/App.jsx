@@ -1097,6 +1097,7 @@ export default function TradingJournal() {
     if (!analytics || !analytics.tradesList.length) return null;
     const s1 = { aligned: [], counter: [], noStructure: [], insufficient: [], noCandles: [] };
     const s2 = { atOB: [], nearOB: [], noOB: [], noData: [] };
+    const s3 = { atFVG: [], nearFVG: [], noFVG: [], noData: [] };
     const s4 = { swept: [], noSweep: [], noData: [] };
     const s6 = {};
     for (const t of analytics.tradesList) {
@@ -1113,6 +1114,12 @@ export default function TradingJournal() {
       else if (v.s2.verdict === "near-ob") s2.nearOB.push(t);
       else if (v.s2.verdict === "no-ob") s2.noOB.push(t);
       else s2.noData.push(t);
+      // S3
+      if (!v || !v.s3) { s3.noData.push(t); }
+      else if (v.s3.verdict === "at-fvg") s3.atFVG.push(t);
+      else if (v.s3.verdict === "near-fvg") s3.nearFVG.push(t);
+      else if (v.s3.verdict === "no-fvg") s3.noFVG.push(t);
+      else s3.noData.push(t);
       // S4
       if (!v || !v.s4) { s4.noData.push(t); }
       else if (v.s4.verdict === "swept") s4.swept.push(t);
@@ -1131,6 +1138,7 @@ export default function TradingJournal() {
     return {
       s1: { aligned: stats(s1.aligned), counter: stats(s1.counter), noStructure: stats(s1.noStructure), insufficient: stats(s1.insufficient), noCandles: stats(s1.noCandles) },
       s2: { atOB: stats(s2.atOB), nearOB: stats(s2.nearOB), noOB: stats(s2.noOB), noData: stats(s2.noData) },
+      s3: { atFVG: stats(s3.atFVG), nearFVG: stats(s3.nearFVG), noFVG: stats(s3.noFVG), noData: stats(s3.noData) },
       s4: { swept: stats(s4.swept), noSweep: stats(s4.noSweep), noData: stats(s4.noData) },
       s6: Object.fromEntries(Object.entries(s6).map(([k, v]) => [k, stats(v)])),
     };
@@ -1828,6 +1836,18 @@ export default function TradingJournal() {
                                     )}
                                   </div>
                                 )}
+                                {v && v.s3 && (
+                                  <div className="mt-2">
+                                    <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S3 — Fair Value Gap</div>
+                                    <div className="text-xs" style={{ color: v.s3.atFVG ? C.emerald : C.text }}>{v.s3.detail}</div>
+                                    {v.s3.fvgZone && (
+                                      <div className="text-xs mt-0.5" style={{ color: C.textFaint }}>
+                                        FVG zone: <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{v.s3.fvgZone.low.toFixed(2)} – {v.s3.fvgZone.high.toFixed(2)}</span>
+                                        {v.s3.strength && <> · <span style={{ color: v.s3.strength === "strong" ? C.emerald : v.s3.strength === "weak" ? C.rose : C.amber }}>{v.s3.strength}</span></>}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                                 {v && v.s4 && (
                                   <div className="mt-2">
                                     <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S4 — Liquidity Sweep</div>
@@ -1954,6 +1974,37 @@ export default function TradingJournal() {
             </div>
           )}
 
+          {/* S3 Impact breakdown */}
+          {strategyImpact && hasCandleData && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs font-mono" style={{ color: C.emerald }}>S3</span>
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Fair Value Gap — Impact</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                {[
+                  { label: "At FVG zone", data: strategyImpact.s3.atFVG, color: C.emerald },
+                  { label: "Near FVG (not at)", data: strategyImpact.s3.nearFVG, color: C.amber },
+                  { label: "No active FVG", data: strategyImpact.s3.noFVG, color: C.rose },
+                  { label: "No data", data: strategyImpact.s3.noData, color: C.textFaint },
+                ].map((g) => (
+                  <div key={g.label} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                    <div className="text-xs mb-1" style={{ color: g.color }}>{g.label}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: g.data.pl >= 0 ? C.emerald : C.rose }}>
+                      {fmtMoney(g.data.pl)}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                      {g.data.n} trades · {g.data.winRate}% win
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs" style={{ color: C.textFaint }}>
+                "At FVG zone" = entry price was inside a 3-candle imbalance gap. FVGs are classified as strong ({">"}1.5x ATR), regular, or weak ({"<"}0.3x ATR). Entries at FVG zones target the imbalance fill — compare to see if this confluence adds edge.
+              </div>
+            </div>
+          )}
+
           {/* S4 Impact breakdown */}
           {strategyImpact && hasCandleData && (
             <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
@@ -2020,7 +2071,7 @@ export default function TradingJournal() {
               {[
                 { id: "S1", name: "Market Structure", desc: "BOS/CHoCH bias alignment", active: hasCandleData, color: C.emerald },
                 { id: "S2", name: "Order Blocks", desc: "Entry at opposing-candle zones", active: hasCandleData, color: C.emerald },
-                { id: "S3", name: "Fair Value Gaps", desc: "3-candle imbalance zones", active: false, color: C.textFaint },
+                { id: "S3", name: "Fair Value Gaps", desc: "3-candle imbalance zones", active: hasCandleData, color: C.emerald },
                 { id: "S4", name: "Liquidity Sweeps", desc: "Wick-through-swing reversals", active: hasCandleData, color: C.emerald },
                 { id: "S5", name: "Volume Profile", desc: "POC / VAH / VAL levels", active: false, color: C.textFaint },
                 { id: "S6", name: "Session Context", desc: "Asian / London / New York", active: settings.brokerGmtOffsetHours != null, color: C.amber },

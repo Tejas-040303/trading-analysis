@@ -3,11 +3,11 @@
 //
 // Strategy checks built here:
 //   S1: Market Structure Bias (BOS/CHoCH)
-//   S2: Order Block Confluence     (future)
-//   S3: Fair Value Gap Confluence   (future)
-//   S4: Liquidity Sweep             (future)
+//   S2: Order Block Confluence
+//   S3: Fair Value Gap Confluence
+//   S4: Liquidity Sweep
 //   S5: Volume Profile              (future)
-//   S6: Session Context             (no candles needed — lives here for verdict composition)
+//   S6: Session Context             (no candles needed)
 
 // ── Swing detection ─────────────────────────────────────────────────────
 // Fractal pivot: a swing high at bar i is confirmed when we've seen `lookback`
@@ -263,6 +263,128 @@ export function computeS2Verdict(candles, trade, structureEvents, orderBlocks, l
   };
 }
 
+// ── S3: Fair Value Gap detection ─────────────────────────────────────────
+// A Fair Value Gap is a 3-candle imbalance where candle 1's wick doesn't
+// overlap candle 3's wick, leaving a gap that price may return to fill.
+//
+// Bullish FVG: candle1.high < candle3.low (gap between candle 1 top and candle 3 bottom)
+// Bearish FVG: candle1.low > candle3.high (gap between candle 3 top and candle 1 bottom)
+//
+// Size relative to a local ATR classifies: Strong (>1.5x ATR), Regular, Weak (<0.3x ATR)
+// An FVG is "filled" when price trades through it.
+
+export function detectFVGs(candles, atrPeriod = 14) {
+  const fvgs = []; // { direction, high, low, formIndex, filledAt, strength }
+
+  for (let i = 2; i < candles.length; i++) {
+    const c1 = candles[i - 2];
+    const c2 = candles[i - 1];
+    const c3 = candles[i];
+
+    // Bullish FVG: gap up — candle 1 high is below candle 3 low
+    if (c1.high < c3.low) {
+      const gapSize = c3.low - c1.high;
+      const atr = localATR(candles, i, atrPeriod);
+      fvgs.push({
+        direction: "bullish",
+        high: c3.low,   // top of the gap
+        low: c1.high,   // bottom of the gap
+        formIndex: i,
+        filledAt: null,
+        gapSize,
+        strength: atr > 0 ? (gapSize > atr * 1.5 ? "strong" : gapSize < atr * 0.3 ? "weak" : "regular") : "regular",
+      });
+    }
+
+    // Bearish FVG: gap down — candle 1 low is above candle 3 high
+    if (c1.low > c3.high) {
+      const gapSize = c1.low - c3.high;
+      const atr = localATR(candles, i, atrPeriod);
+      fvgs.push({
+        direction: "bearish",
+        high: c1.low,   // top of the gap
+        low: c3.high,   // bottom of the gap
+        formIndex: i,
+        filledAt: null,
+        gapSize,
+        strength: atr > 0 ? (gapSize > atr * 1.5 ? "strong" : gapSize < atr * 0.3 ? "weak" : "regular") : "regular",
+      });
+    }
+  }
+
+  // Mark filled FVGs
+  for (const fvg of fvgs) {
+    for (let i = fvg.formIndex + 1; i < candles.length; i++) {
+      if (fvg.direction === "bullish" && candles[i].low <= fvg.low) {
+        fvg.filledAt = i;
+        break;
+      }
+      if (fvg.direction === "bearish" && candles[i].high >= fvg.high) {
+        fvg.filledAt = i;
+        break;
+      }
+    }
+  }
+
+  return fvgs;
+}
+
+function localATR(candles, endIndex, period) {
+  const start = Math.max(0, endIndex - period);
+  let sum = 0, count = 0;
+  for (let i = start; i <= endIndex && i < candles.length; i++) {
+    sum += candles[i].high - candles[i].low;
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+export function computeS3Verdict(candles, trade, fvgs, lookback) {
+  const barIdx = findBarAtTime(candles, trade.openTime);
+  if (barIdx < 0) return null;
+  if (candles.slice(0, barIdx + 1).length < lookback * 2 + 1) {
+    return { verdict: "insufficient", detail: "Not enough candle data for FVG detection.", atFVG: false };
+  }
+
+  const tradeDir = trade.type === "buy" ? "bullish" : "bearish";
+  const entryPrice = typeof trade.openPrice === "number" ? trade.openPrice : parseFloat(trade.openPrice);
+  if (!Number.isFinite(entryPrice)) {
+    return { verdict: "insufficient", detail: "No entry price available.", atFVG: false };
+  }
+
+  // Active FVGs: formed before entry, not yet filled at entry
+  const active = fvgs.filter((f) =>
+    f.direction === tradeDir &&
+    f.formIndex <= barIdx &&
+    (f.filledAt === null || f.filledAt > barIdx)
+  );
+
+  if (active.length === 0) {
+    return { verdict: "no-fvg", detail: `No active ${tradeDir} FVG at entry.`, atFVG: false };
+  }
+
+  // Check if entry price is inside any active FVG
+  const inside = active.filter((f) => entryPrice >= f.low && entryPrice <= f.high);
+
+  if (inside.length > 0) {
+    const best = inside.reduce((a, b) => (a.strength === "strong" ? a : b.strength === "strong" ? b : a));
+    const barsAgo = barIdx - best.formIndex;
+    return {
+      verdict: "at-fvg",
+      detail: `Entry inside a ${best.strength} ${tradeDir} FVG (formed ${barsAgo} bars ago, gap ${best.low.toFixed(2)}–${best.high.toFixed(2)}).`,
+      atFVG: true,
+      strength: best.strength,
+      fvgZone: { high: best.high, low: best.low },
+    };
+  }
+
+  return {
+    verdict: "near-fvg",
+    detail: `${active.length} active ${tradeDir} FVG(s) exist but entry price was outside them.`,
+    atFVG: false,
+  };
+}
+
 // ── S4: Liquidity Sweep detection ────────────────────────────────────────
 // A liquidity sweep occurs when a candle's wick pierces a prior swing point
 // but the body closes back inside it — a "stop hunt" that grabs liquidity
@@ -422,13 +544,14 @@ export function precomputeSmcState(candles, lookback = 5) {
   const swings = detectSwings(candles, lookback);
   const structure = detectStructure(candles, swings);
   const orderBlocks = detectOrderBlocks(candles, structure);
+  const fvgs = detectFVGs(candles);
   const sweeps = detectLiquiditySweeps(candles, swings);
-  return { swings, structure, orderBlocks, sweeps };
+  return { swings, structure, orderBlocks, fvgs, sweeps };
 }
 
 export function computeTradeVerdicts(candles, trade, settings = {}, smcState = null) {
   const lookback = settings.swingLookback || 5;
-  const result = { s1: null, s2: null, s4: null, s6: null };
+  const result = { s1: null, s2: null, s3: null, s4: null, s6: null };
 
   if (candles && candles.length > 0) {
     // S1: Market Structure
@@ -437,6 +560,8 @@ export function computeTradeVerdicts(candles, trade, settings = {}, smcState = n
     if (smcState) {
       // S2: Order Block Confluence
       result.s2 = computeS2Verdict(candles, trade, smcState.structure, smcState.orderBlocks, lookback);
+      // S3: Fair Value Gap Confluence
+      result.s3 = computeS3Verdict(candles, trade, smcState.fvgs, lookback);
       // S4: Liquidity Sweep
       result.s4 = computeS4Verdict(candles, trade, smcState.sweeps, lookback);
     }
