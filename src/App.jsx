@@ -6,10 +6,12 @@ import {
 import {
   UploadCloud, RotateCcw, AlertTriangle, TrendingUp, TrendingDown,
   CircleCheck, Flame, Wallet, Target, Percent, Calendar,
-  Settings, Download, Upload, X,
+  Settings, Download, Upload, X, BarChart3, ChevronDown, ChevronRight,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { storage } from "./lib/storage";
+import { parseCandleCSV, inferSymbolTimeframe, mergeCandles, candleStorageKey } from "./lib/candleParser";
+import { computeTradeVerdicts } from "./lib/smc";
 
 // User-editable settings, persisted to tj_settings via the Settings panel.
 const DEFAULT_SETTINGS = {
@@ -18,6 +20,7 @@ const DEFAULT_SETTINGS = {
   revengeWindowMin: 3,        // minutes: a same-symbol re-entry after a loss within this is "revenge"
   brokerGmtOffsetHours: null, // reserved for the upcoming session view (Asian/London/NY)
   seriousStart: "2026-05-28", // YYYY-MM-DD; trades before this are archived as the beginner era
+  swingLookback: 5,           // fractal pivot lookback for SMC swing detection
 };
 
 const C = {
@@ -710,6 +713,7 @@ function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
         draft.brokerGmtOffsetHours === "" || draft.brokerGmtOffsetHours == null
           ? null
           : Number(draft.brokerGmtOffsetHours),
+      swingLookback: num(draft.swingLookback, DEFAULT_SETTINGS.swingLookback),
     });
   };
   return (
@@ -736,7 +740,12 @@ function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
         {numRow("overtradeThreshold", "Overtrade threshold", 'Trades in a day at or above this flag the day as "Busy".')}
         {numRow("tiltStreakMin", "Tilt streak", "Consecutive losing trades that count as a tilt cluster.")}
         {numRow("revengeWindowMin", "Revenge window (minutes)", "A same-symbol re-entry within this many minutes of a loss is flagged as revenge.")}
-        {numRow("brokerGmtOffsetHours", "Broker GMT offset (hours)", "Your MT5 server's offset from GMT. Reserved for the upcoming session view; leave blank if unsure.")}
+        {numRow("brokerGmtOffsetHours", "Broker GMT offset (hours)", "Your MT5 server's offset from GMT. Used for session bucketing (Asian/London/NY); leave blank if unsure.")}
+
+        <div className="mt-2 pt-4 mb-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
+          <div className="text-sm mb-2" style={{ color: C.text, fontWeight: 500 }}>Strategy overlay</div>
+        </div>
+        {numRow("swingLookback", "Swing lookback (bars)", "Fractal pivot lookback for SMC swing detection. Default 5 — higher values detect larger swings, lower values are more sensitive.")}
 
         <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
           <div className="text-sm mb-1" style={{ color: C.text }}>Backup</div>
@@ -771,8 +780,11 @@ export default function TradingJournal() {
   const [dragOver, setDragOver] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
+  const [candleIndex, setCandleIndex] = useState({}); // { "GOLD_M5": { symbol, timeframe, count } }
+  const [expandedTrade, setExpandedTrade] = useState(null);
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
+  const candleInputRef = useRef(null);
 
   useEffect(() => {
     if (document.getElementById("tj-fonts")) return;
@@ -784,12 +796,12 @@ export default function TradingJournal() {
   }, []);
 
   function loadStateFromStorage() {
-    // Load persisted state from localStorage (replaces the prototype's window.storage).
     setPositions(storage.get("tj_positions") || []);
     setBalanceOps(storage.get("tj_balance_ops") || []);
     setAccountMeta(storage.get("tj_account_meta") || null);
     setLastUpdated(storage.get("tj_last_updated") || null);
     setSettings({ ...DEFAULT_SETTINGS, ...(storage.get("tj_settings") || {}) });
+    setCandleIndex(storage.get("tj_candle_index") || {});
   }
 
   useEffect(() => {
@@ -843,6 +855,54 @@ export default function TradingJournal() {
     setProcessing(false);
   }
 
+  async function handleCandleFiles(fileList) {
+    const files = Array.from(fileList || []).filter((f) => /\.csv$/i.test(f.name));
+    if (!files.length) {
+      setUploadError("Please upload .csv files exported from MT5 (chart → right-click → Save As CSV, or View → Symbols → Bars).");
+      return;
+    }
+    setProcessing(true);
+    setUploadError(null);
+    const failed = [];
+    const newIndex = { ...candleIndex };
+
+    for (const file of files) {
+      try {
+        const text = await file.text();
+        const candles = parseCandleCSV(text);
+        if (!candles.length) throw new Error("no candles parsed");
+
+        let { symbol, timeframe } = inferSymbolTimeframe(file.name);
+        if (!symbol) symbol = window.prompt(`Symbol for "${file.name}"? (e.g. GOLD, BTCUSD)`);
+        if (!timeframe) timeframe = window.prompt(`Timeframe for "${file.name}"? (e.g. M5, M15, H1)`);
+        if (!symbol || !timeframe) {
+          failed.push(`${file.name} (couldn't determine symbol/timeframe)`);
+          continue;
+        }
+        symbol = symbol.toUpperCase();
+        timeframe = timeframe.toUpperCase();
+
+        const key = candleStorageKey(symbol, timeframe);
+        const existing = storage.get(key) || [];
+        const merged = mergeCandles(existing, candles);
+        storage.set(key, merged);
+
+        const indexKey = `${symbol}_${timeframe}`;
+        newIndex[indexKey] = { symbol, timeframe, count: merged.length };
+      } catch (err) {
+        failed.push(file.name);
+      }
+    }
+
+    setCandleIndex(newIndex);
+    storage.set("tj_candle_index", newIndex);
+
+    if (failed.length) {
+      setUploadError(`Could not read candles: ${failed.join(", ")}. Make sure these are MT5 CSV candle exports.`);
+    }
+    setProcessing(false);
+  }
+
   function handleReset() {
     setPositions([]); setBalanceOps([]); setAccountMeta(null); setLastUpdated(null);
     setConfirmingReset(false);
@@ -851,6 +911,12 @@ export default function TradingJournal() {
       storage.remove("tj_balance_ops");
       storage.remove("tj_account_meta");
       storage.remove("tj_last_updated");
+      Object.keys(candleIndex).forEach((k) => {
+        const ci = candleIndex[k];
+        storage.remove(candleStorageKey(ci.symbol, ci.timeframe));
+      });
+      storage.remove("tj_candle_index");
+      setCandleIndex({});
     } catch (e) {}
   }
 
@@ -919,6 +985,41 @@ export default function TradingJournal() {
     };
   }, [positions, balanceOps, settings]);
 
+  // Compute SMC verdicts for each trade when candle data is available.
+  // Loads candle data lazily per symbol from localStorage.
+  const tradeVerdicts = useMemo(() => {
+    if (!analytics || !analytics.tradesList.length) return {};
+    const candleCache = {};
+    const loadCandles = (symbol) => {
+      if (candleCache[symbol] !== undefined) return candleCache[symbol];
+      // Try common timeframes in order of preference
+      for (const tf of ["M5", "M1", "M15", "M30", "H1"]) {
+        const key = `${symbol}_${tf}`;
+        if (candleIndex[key]) {
+          const data = storage.get(candleStorageKey(symbol, tf));
+          if (data && data.length) {
+            candleCache[symbol] = data;
+            return data;
+          }
+        }
+      }
+      candleCache[symbol] = null;
+      return null;
+    };
+
+    const verdicts = {};
+    for (const t of analytics.tradesList) {
+      const candles = loadCandles(t.symbol);
+      verdicts[t.ticket] = computeTradeVerdicts(candles, t, {
+        swingLookback: settings.swingLookback || 5,
+        brokerGmtOffsetHours: settings.brokerGmtOffsetHours,
+      });
+    }
+    return verdicts;
+  }, [analytics, candleIndex, settings.swingLookback, settings.brokerGmtOffsetHours]);
+
+  const hasCandleData = Object.keys(candleIndex).length > 0;
+
   const seriousLabel = new Date(settings.seriousStart + "T00:00:00").toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
@@ -961,6 +1062,14 @@ export default function TradingJournal() {
           <UploadCloud size={14} /> Upload report{positions.length ? "s" : ""}
         </button>
         <button
+          onClick={() => candleInputRef.current?.click()}
+          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
+          style={{ background: "transparent", color: C.amber, border: `0.5px solid ${C.amberDim}`, fontWeight: 500 }}
+          title="Upload MT5 candle CSV for strategy analysis"
+        >
+          <BarChart3 size={14} /> Candles
+        </button>
+        <button
           onClick={() => setShowSettings(true)}
           className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
           style={{ background: "transparent", color: C.textMuted, border: `0.5px solid ${C.border}` }}
@@ -985,6 +1094,7 @@ export default function TradingJournal() {
           </div>
         )}
         <input ref={fileInputRef} type="file" accept=".xlsx" multiple className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+        <input ref={candleInputRef} type="file" accept=".csv" multiple className="hidden" onChange={(e) => { handleCandleFiles(e.target.files); e.target.value = ""; }} />
         <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
       </div>
     </div>
@@ -1242,6 +1352,31 @@ export default function TradingJournal() {
         )}
       </div>
 
+      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${hasCandleData ? C.amberDim : C.border}` }}>
+        <div className="flex items-center gap-2 mb-2">
+          <BarChart3 size={15} style={{ color: C.amber }} />
+          <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Strategy overlay — candle data</span>
+        </div>
+        {hasCandleData ? (
+          <>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {Object.entries(candleIndex).map(([key, ci]) => (
+                <span key={key} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                  {ci.symbol} {ci.timeframe} — {ci.count.toLocaleString()} bars
+                </span>
+              ))}
+            </div>
+            <div className="text-xs" style={{ color: C.textFaint }}>
+              S1 (market structure) verdicts are active in the Trades table below. Click any row to expand the verdict. Strategies are computed as a causal forward pass — each bar only sees prior data, no repainting.
+            </div>
+          </>
+        ) : (
+          <div className="text-xs" style={{ color: C.textFaint }}>
+            Upload candle CSVs (MT5 chart export) via the <span style={{ color: C.amber }}>Candles</span> button to enable strategy verdicts. In MT5: open the chart → right-click → Save As CSV, or use View → Symbols → Bars/History. Start with your primary symbol (GOLD) on M5.
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <div className="rounded-xl p-4 lg:col-span-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
           <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>By symbol</div>
@@ -1310,37 +1445,86 @@ export default function TradingJournal() {
               <> · avg <span style={{ color: a.avgR >= 0 ? C.emerald : C.rose, fontFamily: "'JetBrains Mono', monospace" }}>{a.avgR >= 0 ? "+" : ""}{a.avgR}R</span> over {a.rCount} with a stop</>
             )}
           </span>
+          {hasCandleData && (
+            <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: C.amber, background: C.amberDim }}>S1 active</span>
+          )}
         </div>
-        <div style={{ maxHeight: 360, overflowY: "auto" }}>
+        <div style={{ maxHeight: 460, overflowY: "auto" }}>
           <table className="w-full text-sm">
             <thead style={{ position: "sticky", top: 0, background: C.panel }}>
               <tr style={{ color: C.textFaint }}>
+                {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
                 <th className="text-left pb-2 text-xs">When</th>
                 <th className="text-left pb-2 text-xs">Symbol</th>
                 <th className="text-left pb-2 text-xs">Side</th>
                 <th className="text-right pb-2 text-xs">Hold</th>
                 <th className="text-right pb-2 text-xs">P/L</th>
                 <th className="text-right pb-2 text-xs">R</th>
-                <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 160 }}>Note</th>
+                {hasCandleData && <th className="text-center pb-2 text-xs">Structure</th>}
+                <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140 }}>Note</th>
               </tr>
             </thead>
             <tbody>
-              {a.tradesList.map((t) => (
-                <tr key={t.ticket} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                  <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
-                  <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
-                  <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
-                  <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
-                  <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
-                  <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
-                  <td className="py-1.5 pl-3"><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
-                </tr>
-              ))}
+              {a.tradesList.map((t) => {
+                const v = tradeVerdicts[t.ticket];
+                const s1 = v && v.s1;
+                const s6 = v && v.s6;
+                const isExpanded = expandedTrade === t.ticket;
+                const s1Color = !s1 ? C.textFaint : s1.verdict === "aligned" ? C.emerald : s1.verdict === "counter" ? C.rose : C.textFaint;
+                const s1Label = !s1 ? "—" : s1.verdict === "aligned" ? "With" : s1.verdict === "counter" ? "Against" : s1.verdict === "no-structure" ? "No bias" : "—";
+                return (
+                  <React.Fragment key={t.ticket}>
+                    <tr
+                      style={{ borderTop: `0.5px solid ${C.borderSoft}`, cursor: hasCandleData ? "pointer" : undefined }}
+                      onClick={() => hasCandleData && setExpandedTrade(isExpanded ? null : t.ticket)}
+                    >
+                      {hasCandleData && (
+                        <td className="py-1.5" style={{ color: C.textFaint, width: 20 }}>
+                          {s1 && s1.verdict !== "insufficient" ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
+                        </td>
+                      )}
+                      <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
+                      <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
+                      <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
+                      <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
+                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
+                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
+                      {hasCandleData && (
+                        <td className="py-1.5 text-center">
+                          <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1 && s1.verdict === "aligned" ? C.emeraldDim : s1 && s1.verdict === "counter" ? C.roseDim : "transparent" }}>{s1Label}</span>
+                        </td>
+                      )}
+                      <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
+                    </tr>
+                    {isExpanded && s1 && (
+                      <tr>
+                        <td colSpan={hasCandleData ? 9 : 7} style={{ padding: 0 }}>
+                          <div className="px-4 py-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${s1Color}` }}>
+                            <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
+                            <div className="text-xs" style={{ color: C.text }}>{s1.detail}</div>
+                            {s1.bias && (
+                              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                Active bias at entry: <span style={{ color: s1.bias === "bullish" ? C.emerald : C.rose }}>{s1.bias}</span>
+                              </div>
+                            )}
+                            {s6 && s6.session && (
+                              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                S6 — Session: <span style={{ color: C.amber }}>{s6.session}</span>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <div className="text-xs mt-3" style={{ color: C.textFaint }}>
           R = profit ÷ risk, where risk = stop distance × volume × an empirically-derived point value per symbol. Trades without a stop-loss show "—". Notes save when you click away.
+          {hasCandleData && " Structure = S1 market structure alignment (BOS/CHoCH). Click a row to expand the verdict."}
         </div>
       </div>
 
