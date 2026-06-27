@@ -316,7 +316,23 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
   const withdrawalsSum = sumKind("withdrawal");
   const transferOutSum = sumKind("transfer_out");
   const transferInSum = sumKind("transfer_in");
-  let currentBalance = bops.length ? bops[bops.length - 1].balance : null;
+  // True current balance: anchor on the running balance after the last balance op
+  // (deposit/withdrawal/transfer), then add the net result of every trade that closed
+  // AFTER it. A balance op's `balance` field reflects deposits/withdrawals only — not
+  // the trades since — so using it alone leaves the figure stale (e.g. showing the
+  // post-deposit balance, not the real post-trading balance).
+  let currentBalance = null;
+  if (bops.length) {
+    const lastOp = bops[bops.length - 1];
+    if (lastOp.balance != null) {
+      const lastOpMs = lastOp.time.getTime();
+      const plAfter = pos.reduce(
+        (s, p) => s + (p.closeTime.getTime() > lastOpMs ? p.profit + (p.commission || 0) + (p.swap || 0) : 0),
+        0
+      );
+      currentBalance = lastOp.balance + plAfter;
+    }
+  }
   // Phase 1 "balance drawdown (approximate)" — walks only balance-type rows, so
   // this is balance-curve drawdown, not intra-trade equity drawdown (spec §6).
   let maxDrawdownPct = 0;
