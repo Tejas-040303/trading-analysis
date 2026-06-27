@@ -6,7 +6,7 @@
 //   S2: Order Block Confluence
 //   S3: Fair Value Gap Confluence
 //   S4: Liquidity Sweep
-//   S5: Volume Profile              (future)
+//   S5: Volume Profile (Fixed Range, tick-volume approximation)
 //   S6: Session Context             (no candles needed)
 
 // ── Swing detection ─────────────────────────────────────────────────────
@@ -465,6 +465,119 @@ export function computeS4Verdict(candles, trade, sweeps, lookback) {
   };
 }
 
+// ── S5: Volume Profile (Fixed Range) ─────────────────────────────────────
+// Approximates a volume profile from tick volume by distributing each
+// candle's tick volume evenly across its high-low range into price bins.
+// Produces POC (Point of Control — highest volume price), VAH/VAL
+// (Value Area High/Low — 70% of volume concentrated here).
+//
+// Note: MT5 tick volume is a proxy, not real exchange volume. This is the
+// standard approximation but should not be over-trusted.
+
+export function buildVolumeProfile(candles, startIdx, endIdx, numBins = 100) {
+  if (startIdx >= endIdx || endIdx > candles.length) return null;
+
+  let minPrice = Infinity, maxPrice = -Infinity;
+  for (let i = startIdx; i < endIdx; i++) {
+    if (candles[i].low < minPrice) minPrice = candles[i].low;
+    if (candles[i].high > maxPrice) maxPrice = candles[i].high;
+  }
+  if (maxPrice <= minPrice) return null;
+
+  const binSize = (maxPrice - minPrice) / numBins;
+  const bins = new Float64Array(numBins);
+
+  for (let i = startIdx; i < endIdx; i++) {
+    const c = candles[i];
+    const vol = c.tickVolume || 1;
+    const cRange = c.high - c.low;
+    if (cRange <= 0) {
+      const bin = Math.min(numBins - 1, Math.floor((c.close - minPrice) / binSize));
+      bins[bin] += vol;
+      continue;
+    }
+    const lo = Math.max(0, Math.floor((c.low - minPrice) / binSize));
+    const hi = Math.min(numBins - 1, Math.floor((c.high - minPrice) / binSize));
+    const perBin = vol / (hi - lo + 1);
+    for (let b = lo; b <= hi; b++) bins[b] += perBin;
+  }
+
+  // POC = bin with highest volume
+  let pocBin = 0;
+  for (let b = 1; b < numBins; b++) {
+    if (bins[b] > bins[pocBin]) pocBin = b;
+  }
+  const poc = minPrice + (pocBin + 0.5) * binSize;
+
+  // Value Area: expand from POC until 70% of total volume
+  const totalVol = bins.reduce((s, v) => s + v, 0);
+  const vaTarget = totalVol * 0.7;
+  let vaVol = bins[pocBin];
+  let vaLo = pocBin, vaHi = pocBin;
+  while (vaVol < vaTarget && (vaLo > 0 || vaHi < numBins - 1)) {
+    const addLo = vaLo > 0 ? bins[vaLo - 1] : 0;
+    const addHi = vaHi < numBins - 1 ? bins[vaHi + 1] : 0;
+    if (addLo >= addHi && vaLo > 0) { vaLo--; vaVol += bins[vaLo]; }
+    else if (vaHi < numBins - 1) { vaHi++; vaVol += bins[vaHi]; }
+    else { vaLo--; vaVol += bins[vaLo]; }
+  }
+  const vah = minPrice + (vaHi + 1) * binSize;
+  const val = minPrice + vaLo * binSize;
+
+  return { poc, vah, val, minPrice, maxPrice, binSize, bins };
+}
+
+export function computeS5Verdict(candles, trade, lookback) {
+  const barIdx = findBarAtTime(candles, trade.openTime);
+  if (barIdx < 0) return null;
+
+  // Use last 200 bars (or available) as the profile range — a session-scale window
+  const profileBars = 200;
+  const startIdx = Math.max(0, barIdx - profileBars);
+  if (barIdx - startIdx < 30) {
+    return { verdict: "insufficient", detail: "Not enough bars to build a volume profile.", zone: null };
+  }
+
+  const profile = buildVolumeProfile(candles, startIdx, barIdx + 1);
+  if (!profile) {
+    return { verdict: "insufficient", detail: "Could not compute volume profile.", zone: null };
+  }
+
+  const entryPrice = typeof trade.openPrice === "number" ? trade.openPrice : parseFloat(trade.openPrice);
+  if (!Number.isFinite(entryPrice)) {
+    return { verdict: "insufficient", detail: "No entry price available.", zone: null };
+  }
+
+  const { poc, vah, val } = profile;
+  const tolerance = (vah - val) * 0.05;
+
+  if (entryPrice >= val - tolerance && entryPrice <= vah + tolerance) {
+    const nearPoc = Math.abs(entryPrice - poc) <= tolerance * 2;
+    if (nearPoc) {
+      return {
+        verdict: "at-poc",
+        detail: `Entry near POC (${poc.toFixed(2)}) — the highest-volume price level. This is a high-liquidity zone.`,
+        zone: "poc",
+        poc, vah, val,
+      };
+    }
+    return {
+      verdict: "in-va",
+      detail: `Entry inside the Value Area (${val.toFixed(2)}–${vah.toFixed(2)}, POC ${poc.toFixed(2)}). Price is in the high-volume zone.`,
+      zone: "value-area",
+      poc, vah, val,
+    };
+  }
+
+  const above = entryPrice > vah;
+  return {
+    verdict: "outside-va",
+    detail: `Entry ${above ? "above" : "below"} the Value Area (${val.toFixed(2)}–${vah.toFixed(2)}, POC ${poc.toFixed(2)}). Low-volume zone — price may move quickly here.`,
+    zone: above ? "above-va" : "below-va",
+    poc, vah, val,
+  };
+}
+
 // ── S6: Session Context ─────────────────────────────────────────────────
 // Which trading session was the trade opened in? Uses broker GMT offset.
 // No candles needed — just the trade's open time.
@@ -551,7 +664,7 @@ export function precomputeSmcState(candles, lookback = 5) {
 
 export function computeTradeVerdicts(candles, trade, settings = {}, smcState = null) {
   const lookback = settings.swingLookback || 5;
-  const result = { s1: null, s2: null, s3: null, s4: null, s6: null };
+  const result = { s1: null, s2: null, s3: null, s4: null, s5: null, s6: null };
 
   if (candles && candles.length > 0) {
     // S1: Market Structure
@@ -565,6 +678,8 @@ export function computeTradeVerdicts(candles, trade, settings = {}, smcState = n
       // S4: Liquidity Sweep
       result.s4 = computeS4Verdict(candles, trade, smcState.sweeps, lookback);
     }
+    // S5: Volume Profile (doesn't need precomputed state — builds its own window)
+    result.s5 = computeS5Verdict(candles, trade, lookback);
   }
 
   // S6: Session Context
