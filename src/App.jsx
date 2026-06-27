@@ -67,6 +67,20 @@ const fmtDateFull = (iso) => {
 const fmtDateTimeShort = (iso) =>
   new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
+// Single source of truth for which calendar day a trade belongs to. Uses the
+// Date's LOCAL components, which reproduce the original MT5 server wall-clock
+// (parseMT5DateTime built the Date from those wall-clock numbers). Never use
+// toISOString()/UTC for bucketing — that silently shifts near-midnight trades
+// onto the wrong day, and disagreed with the day-of-week chart (which uses
+// Date.getDay(), also local). Both now derive from the same local wall-clock.
+// (An offset arg for explicit GMT/session bucketing arrives with the Settings panel.)
+function tradeDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function parseMT5DateTime(value) {
   if (value == null) return null;
   if (typeof value === "string") {
@@ -161,7 +175,7 @@ function computeAnalytics(rawPositions, rawBalanceOps) {
     })
     .sort((a, b) => a.openTime - b.openTime);
 
-  const dateKey = (d) => d.toISOString().slice(0, 10);
+  const dateKey = tradeDate; // local MT5 wall-clock day — consistent with the day-of-week chart
   const dailyMap = new Map();
   pos.forEach((p) => {
     const k = dateKey(p.openTime);
