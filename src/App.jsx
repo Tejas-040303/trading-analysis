@@ -782,6 +782,7 @@ export default function TradingJournal() {
   const [showSettings, setShowSettings] = useState(false);
   const [candleIndex, setCandleIndex] = useState({}); // { "GOLD_M5": { symbol, timeframe, count } }
   const [expandedTrade, setExpandedTrade] = useState(null);
+  const [activeTab, setActiveTab] = useState("dashboard");
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
   const candleInputRef = useRef(null);
@@ -1186,12 +1187,40 @@ export default function TradingJournal() {
 
   const a = analytics;
 
+  const TABS = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "trades", label: "Trades" },
+    { id: "strategy", label: "Strategy" },
+  ];
+
+  const tabBar = (
+    <div className="flex gap-1 mb-6 rounded-lg p-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+      {TABS.map((tab) => (
+        <button
+          key={tab.id}
+          onClick={() => setActiveTab(tab.id)}
+          className="flex-1 text-sm py-2 rounded-md"
+          style={{
+            background: activeTab === tab.id ? C.panelAlt : "transparent",
+            color: activeTab === tab.id ? C.text : C.textMuted,
+            border: activeTab === tab.id ? `0.5px solid ${C.border}` : "0.5px solid transparent",
+            fontWeight: activeTab === tab.id ? 600 : 400,
+            fontFamily: "'Space Grotesk', sans-serif",
+            cursor: "pointer",
+          }}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: 480 }} className="rounded-2xl p-6 md:p-8">
       {headerNode}
 
       <div className="text-xs mb-4" style={{ color: C.textFaint }}>
-        Showing {a.totalTrades} trades since {seriousLabel}.{prior ? " Your earlier beginner-era history is archived at the bottom." : ""}
+        Showing {a.totalTrades} trades since {seriousLabel}.{prior ? " Your earlier beginner-era history is archived in the Dashboard tab." : ""}
       </div>
 
       {uploadError && (
@@ -1201,395 +1230,443 @@ export default function TradingJournal() {
         <div className="text-sm mb-4" style={{ color: C.amber }}>Processing new upload…</div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-        <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
-        <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
-        <StatCard icon={Wallet} label="Current balance" value={fmtMoney(a.currentBalance)} sub={`ROI ${fmtPct(a.roiPct)}`} />
-        <StatCard icon={AlertTriangle} label="Max drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={a.maxDrawdownAmt > 0 ? `${fmtMoney(-a.maxDrawdownAmt)} peak-to-trough` : `${a.daysTracked} active days`} />
-      </div>
+      {tabBar}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <StatCard icon={Calendar} label="Gross profit" value={fmtMoney(a.grossProfit)} tone="good" />
-        <StatCard icon={Calendar} label="Gross loss" value={fmtMoney(a.grossLoss)} tone="bad" />
-        <StatCard icon={Percent} label="Largest win" value={fmtMoney(a.largestWin)} tone="good" />
-        <StatCard icon={Percent} label="Largest loss" value={fmtMoney(a.largestLoss)} tone="bad" />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
-        <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.emeraldDim}` }}>
-          <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held 3+ minutes</div>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.emerald }}>{fmtMoney(a.longNet)}</div>
-          <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.longCount} trades — patient, setup-based entries</div>
-        </div>
-        <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.roseDim}` }}>
-          <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held under 3 minutes</div>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.rose }}>{fmtMoney(a.shortNet)}</div>
-          <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.shortCount} trades — impulsive, quick in-and-out</div>
-        </div>
-      </div>
-
-      <div className="mb-4">
-        <ChartCard title="Daily P/L and cumulative trading profit" height={260}>
-          <ComposedChart data={a.dailyStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="label" {...axisProps} />
-            <YAxis yAxisId="left" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
-            <YAxis yAxisId="right" orientation="right" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
-            <Tooltip {...tooltipStyle} formatter={(v, name) => [fmtMoney(v), name]} />
-            <Bar yAxisId="left" dataKey="profit" name="Daily P/L" radius={[3, 3, 0, 0]}>
-              {a.dailyStats.map((d, i) => (
-                <Cell
-                  key={i}
-                  fill={d.profit >= 0 ? C.emerald : C.rose}
-                  stroke={d.hasTiltCluster ? C.amber : "transparent"}
-                  strokeWidth={d.hasTiltCluster ? 2 : 0}
-                />
-              ))}
-            </Bar>
-            <Line yAxisId="right" type="monotone" dataKey="cumProfit" name="Cumulative" stroke={C.amber} strokeWidth={2} dot={{ r: 2, fill: C.amber }} />
-            <Line yAxisId="right" type="monotone" dataKey="cumDisciplined" name="If 3min+ only" stroke={C.emerald} strokeWidth={2} strokeDasharray="4 3" dot={false} />
-          </ComposedChart>
-        </ChartCard>
-        <div className="text-xs mt-2" style={{ color: C.textFaint }}>
-          Amber line = actual cumulative P/L. <span style={{ color: C.emerald }}>Dashed green</span> = cumulative P/L if every under-3-minute trade were removed — the gap between them is the "patience tax." Amber bar outline = a same-day tilt cluster ({settings.tiltStreakMin}+ losses in a row).
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <ChartCard title="Outcome by how long you held the trade" height={220}>
-          <BarChart data={a.durationBuckets} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="label" {...axisProps} />
-            <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
-            <Tooltip {...tooltipStyle} formatter={(v, name, p) => [name === "netPl" ? fmtMoney(v) : v, name === "netPl" ? "Net P/L" : name]} labelFormatter={(l, p) => `${l} hold · ${p?.[0]?.payload?.n ?? ""} trades · ${p?.[0]?.payload?.winRate ?? ""}% win`} />
-            <Bar dataKey="netPl" radius={[3, 3, 0, 0]}>
-              {a.durationBuckets.map((d, i) => (
-                <Cell key={i} fill={d.netPl >= 0 ? C.emerald : C.rose} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ChartCard>
-        <ChartCard title="Net P/L by day of week" height={220}>
-          <BarChart data={a.dowStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="day" {...axisProps} />
-            <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
-            <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} />
-            <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
-              {a.dowStats.map((d, i) => (
-                <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ChartCard>
-      </div>
-
-      {a.sessionStats ? (
-        <div className="mb-6">
-          <ChartCard title="Net P/L by trading session (GMT)" height={220}>
-            <BarChart data={a.sessionStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="session" {...axisProps} />
-              <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
-              <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades · ${p?.[0]?.payload?.winRate ?? 0}% win`} />
-              <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
-                {a.sessionStats.map((d, i) => (
-                  <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ChartCard>
-        </div>
-      ) : (
-        <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-          <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>Session view (Asian / London / New York)</span>
-          <div className="text-xs mt-1" style={{ color: C.textFaint }}>
-            Set your broker's GMT offset in <span style={{ color: C.amber }}>Settings</span> to split your P/L by trading session — MT5 server time isn't GMT, so the offset is needed to label sessions correctly.
-          </div>
-        </div>
-      )}
-
-      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-        <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Calendar</div>
-        <div style={{ overflowX: "auto" }}>
-          <CalendarHeatmap days={a.dailyStats} />
-        </div>
-        <div className="text-xs mt-3" style={{ color: C.textFaint }}>
-          Each cell is a trading day, shaded green (profit) or red (loss) by size. Amber border = a tilt-cluster day.
-        </div>
-      </div>
-
-      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-        <div className="flex items-center gap-2 mb-3">
-          <Flame size={15} style={{ color: C.amber }} />
-          <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Tilt clusters detected</span>
-          <span className="text-xs" style={{ color: C.textFaint }}>({settings.tiltStreakMin}+ same-day losses in a row, plus quick same-symbol re-entries)</span>
-        </div>
-        {a.revengeCount > 0 && (
-          <div className="text-xs mb-3" style={{ color: C.textFaint }}>
-            Also: {a.revengeCount} re-entries within {settings.revengeWindowMin} min of a loss on the same symbol, net {fmtMoney(a.revengePl)}.
-          </div>
-        )}
-        {a.tiltClusters.length === 0 ? (
-          <div className="flex items-center gap-2 text-sm" style={{ color: C.emerald }}>
-            <CircleCheck size={15} /> No tilt clusters in the uploaded data — disciplined across every day so far.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {a.tiltClusters.map((c, i) => (
-              <div key={i} className="rounded-lg p-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${C.rose}` }}>
-                <div className="flex justify-between items-baseline">
-                  <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>{fmtDateFull(c.date)}</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.rose, fontWeight: 500 }}>{fmtMoney(c.pl)}</span>
-                </div>
-                <div className="text-xs mt-1" style={{ color: C.textMuted }}>
-                  {fmtTime(c.start)}–{fmtTime(c.end)} · {c.count} losses in a row · {c.symbols.join(", ")}
-                  {c.lotEscalation && <span style={{ color: C.amber }}> · lot size increased mid-streak</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${hasCandleData ? C.amberDim : C.border}` }}>
-        <div className="flex items-center gap-2 mb-2">
-          <BarChart3 size={15} style={{ color: C.amber }} />
-          <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Strategy overlay — candle data</span>
-        </div>
-        {hasCandleData ? (
-          <>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {Object.entries(candleIndex).map(([key, ci]) => (
-                <span key={key} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
-                  {ci.symbol} {ci.timeframe} — {ci.count.toLocaleString()} bars
-                </span>
-              ))}
-            </div>
-            <div className="text-xs" style={{ color: C.textFaint }}>
-              S1 (market structure) verdicts are active in the Trades table below. Click any row to expand the verdict. Strategies are computed as a causal forward pass — each bar only sees prior data, no repainting.
-            </div>
-          </>
-        ) : (
-          <div className="text-xs" style={{ color: C.textFaint }}>
-            Upload candle CSVs (MT5 chart export) via the <span style={{ color: C.amber }}>Candles</span> button to enable strategy verdicts. In MT5: open the chart → right-click → Save As CSV, or use View → Symbols → Bars/History. Start with your primary symbol (GOLD) on M5.
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-        <div className="rounded-xl p-4 lg:col-span-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-          <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>By symbol</div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ color: C.textFaint }}>
-                <th className="text-left pb-2 text-xs">Symbol</th>
-                <th className="text-right pb-2 text-xs">N</th>
-                <th className="text-right pb-2 text-xs">Win%</th>
-                <th className="text-right pb-2 text-xs">P/L</th>
-              </tr>
-            </thead>
-            <tbody>
-              {a.symbolStats.map((s) => (
-                <tr key={s.symbol} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                  <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
-                  <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.n}</td>
-                  <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.winRate}%</td>
-                  <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: s.netPl >= 0 ? C.emerald : C.rose }}>{fmtMoney(s.netPl)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="rounded-xl p-4 lg:col-span-2" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-          <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Daily breakdown</div>
-          <div style={{ maxHeight: 280, overflowY: "auto" }}>
-            <table className="w-full text-sm">
-              <thead style={{ position: "sticky", top: 0, background: C.panel }}>
-                <tr style={{ color: C.textFaint }}>
-                  <th className="text-left pb-2 text-xs">Date</th>
-                  <th className="text-right pb-2 text-xs">Trades</th>
-                  <th className="text-right pb-2 text-xs">Win%</th>
-                  <th className="text-right pb-2 text-xs">P/L</th>
-                  <th className="text-right pb-2 text-xs">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {a.dailyStats.slice().reverse().map((d) => {
-                  const stripe = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
-                  const statusText = d.hasTiltCluster ? "Tilt" : d.overtrading ? "Busy" : "Calm";
-                  const statusColor = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
-                  return (
-                    <tr key={d.date} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                      <td className="py-1.5" style={{ color: C.text, borderLeft: `3px solid ${stripe}`, paddingLeft: 8 }}>{fmtDateLabel(d.date)}</td>
-                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.trades}</td>
-                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.winRate}%</td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: d.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(d.profit)}</td>
-                      <td className="py-1.5 text-right text-xs" style={{ color: statusColor }}>{statusText}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Trades</span>
-          <span className="text-xs" style={{ color: C.textFaint }}>
-            ({a.tradesList.length})
-            {a.avgR != null && (
-              <> · avg <span style={{ color: a.avgR >= 0 ? C.emerald : C.rose, fontFamily: "'JetBrains Mono', monospace" }}>{a.avgR >= 0 ? "+" : ""}{a.avgR}R</span> over {a.rCount} with a stop</>
-            )}
-          </span>
-          {hasCandleData && (
-            <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: C.amber, background: C.amberDim }}>S1 active</span>
-          )}
-        </div>
-        <div style={{ maxHeight: 460, overflowY: "auto" }}>
-          <table className="w-full text-sm">
-            <thead style={{ position: "sticky", top: 0, background: C.panel }}>
-              <tr style={{ color: C.textFaint }}>
-                {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
-                <th className="text-left pb-2 text-xs">When</th>
-                <th className="text-left pb-2 text-xs">Symbol</th>
-                <th className="text-left pb-2 text-xs">Side</th>
-                <th className="text-right pb-2 text-xs">Hold</th>
-                <th className="text-right pb-2 text-xs">P/L</th>
-                <th className="text-right pb-2 text-xs">R</th>
-                {hasCandleData && <th className="text-center pb-2 text-xs">Structure</th>}
-                <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140 }}>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {a.tradesList.map((t) => {
-                const v = tradeVerdicts[t.ticket];
-                const s1 = v && v.s1;
-                const s6 = v && v.s6;
-                const isExpanded = expandedTrade === t.ticket;
-                const s1Color = !s1 ? C.textFaint : s1.verdict === "aligned" ? C.emerald : s1.verdict === "counter" ? C.rose : C.textFaint;
-                const s1Label = !s1 ? "—" : s1.verdict === "aligned" ? "With" : s1.verdict === "counter" ? "Against" : s1.verdict === "no-structure" ? "No bias" : "—";
-                return (
-                  <React.Fragment key={t.ticket}>
-                    <tr
-                      style={{ borderTop: `0.5px solid ${C.borderSoft}`, cursor: hasCandleData ? "pointer" : undefined }}
-                      onClick={() => hasCandleData && setExpandedTrade(isExpanded ? null : t.ticket)}
-                    >
-                      {hasCandleData && (
-                        <td className="py-1.5" style={{ color: C.textFaint, width: 20 }}>
-                          {s1 && s1.verdict !== "insufficient" ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
-                        </td>
-                      )}
-                      <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
-                      <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
-                      <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
-                      <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
-                      {hasCandleData && (
-                        <td className="py-1.5 text-center">
-                          <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1 && s1.verdict === "aligned" ? C.emeraldDim : s1 && s1.verdict === "counter" ? C.roseDim : "transparent" }}>{s1Label}</span>
-                        </td>
-                      )}
-                      <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
-                    </tr>
-                    {isExpanded && s1 && (
-                      <tr>
-                        <td colSpan={hasCandleData ? 9 : 7} style={{ padding: 0 }}>
-                          <div className="px-4 py-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${s1Color}` }}>
-                            <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
-                            <div className="text-xs" style={{ color: C.text }}>{s1.detail}</div>
-                            {s1.bias && (
-                              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
-                                Active bias at entry: <span style={{ color: s1.bias === "bullish" ? C.emerald : C.rose }}>{s1.bias}</span>
-                              </div>
-                            )}
-                            {s6 && s6.session && (
-                              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
-                                S6 — Session: <span style={{ color: C.amber }}>{s6.session}</span>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div className="text-xs mt-3" style={{ color: C.textFaint }}>
-          R = profit ÷ risk, where risk = stop distance × volume × an empirically-derived point value per symbol. Trades without a stop-loss show "—". Notes save when you click away.
-          {hasCandleData && " Structure = S1 market structure alignment (BOS/CHoCH). Click a row to expand the verdict."}
-        </div>
-      </div>
-
-      {a.balanceOps.length > 0 && (
-        <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-          <div className="flex items-center gap-2 mb-3">
-            <Wallet size={15} style={{ color: C.amber }} />
-            <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Deposits, withdrawals &amp; transfers</span>
-            <span className="text-xs" style={{ color: C.textFaint }}>({a.balanceOps.length} balance operations)</span>
-          </div>
-
+      {/* ── Dashboard tab ──────────────────────────────────────────── */}
+      {activeTab === "dashboard" && (
+        <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <BalanceTotal label="Deposited" value={a.depositsSum} tone="good" />
-            <BalanceTotal label="Withdrawn" value={a.withdrawalsSum} tone="bad" />
-            <BalanceTotal label="Transferred out (skim)" value={a.transferOutSum} tone="amber" />
-            <BalanceTotal label="Transferred in" value={a.transferInSum} tone="good" />
+            <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
+            <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
+            <StatCard icon={Wallet} label="Current balance" value={fmtMoney(a.currentBalance)} sub={`ROI ${fmtPct(a.roiPct)}`} />
+            <StatCard icon={AlertTriangle} label="Max drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={a.maxDrawdownAmt > 0 ? `${fmtMoney(-a.maxDrawdownAmt)} peak-to-trough` : `${a.daysTracked} active days`} />
           </div>
 
-          <div style={{ maxHeight: 260, overflowY: "auto" }}>
-            <table className="w-full text-sm">
-              <thead style={{ position: "sticky", top: 0, background: C.panel }}>
-                <tr style={{ color: C.textFaint }}>
-                  <th className="text-left pb-2 text-xs">Date</th>
-                  <th className="text-left pb-2 text-xs">Type</th>
-                  <th className="text-right pb-2 text-xs">Amount</th>
-                  <th className="text-right pb-2 text-xs">Balance after</th>
-                  <th className="text-left pb-2 text-xs pl-3">Comment</th>
-                </tr>
-              </thead>
-              <tbody>
-                {a.balanceOps.map((op) => {
-                  const meta = OP_KIND[op.kind];
-                  return (
-                    <tr key={op.dealId} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
-                      <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(op.time)}</td>
-                      <td className="py-1.5">
-                        <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: meta.color, background: meta.bg, whiteSpace: "nowrap" }}>{meta.label}</span>
-                      </td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: op.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(op.profit)}</td>
-                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{op.balance != null ? fmtMoney(op.balance) : "—"}</td>
-                      <td className="py-1.5 pl-3 text-xs" style={{ color: C.textFaint, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.comment}>{op.comment || "—"}</td>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <StatCard icon={Calendar} label="Gross profit" value={fmtMoney(a.grossProfit)} tone="good" />
+            <StatCard icon={Calendar} label="Gross loss" value={fmtMoney(a.grossLoss)} tone="bad" />
+            <StatCard icon={Percent} label="Largest win" value={fmtMoney(a.largestWin)} tone="good" />
+            <StatCard icon={Percent} label="Largest loss" value={fmtMoney(a.largestLoss)} tone="bad" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.emeraldDim}` }}>
+              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held 3+ minutes</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.emerald }}>{fmtMoney(a.longNet)}</div>
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.longCount} trades — patient, setup-based entries</div>
+            </div>
+            <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.roseDim}` }}>
+              <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held under 3 minutes</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 500, color: C.rose }}>{fmtMoney(a.shortNet)}</div>
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>{a.shortCount} trades — impulsive, quick in-and-out</div>
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <ChartCard title="Daily P/L and cumulative trading profit" height={260}>
+              <ComposedChart data={a.dailyStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" {...axisProps} />
+                <YAxis yAxisId="left" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
+                <YAxis yAxisId="right" orientation="right" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
+                <Tooltip {...tooltipStyle} formatter={(v, name) => [fmtMoney(v), name]} />
+                <Bar yAxisId="left" dataKey="profit" name="Daily P/L" radius={[3, 3, 0, 0]}>
+                  {a.dailyStats.map((d, i) => (
+                    <Cell
+                      key={i}
+                      fill={d.profit >= 0 ? C.emerald : C.rose}
+                      stroke={d.hasTiltCluster ? C.amber : "transparent"}
+                      strokeWidth={d.hasTiltCluster ? 2 : 0}
+                    />
+                  ))}
+                </Bar>
+                <Line yAxisId="right" type="monotone" dataKey="cumProfit" name="Cumulative" stroke={C.amber} strokeWidth={2} dot={{ r: 2, fill: C.amber }} />
+                <Line yAxisId="right" type="monotone" dataKey="cumDisciplined" name="If 3min+ only" stroke={C.emerald} strokeWidth={2} strokeDasharray="4 3" dot={false} />
+              </ComposedChart>
+            </ChartCard>
+            <div className="text-xs mt-2" style={{ color: C.textFaint }}>
+              Amber line = actual cumulative P/L. <span style={{ color: C.emerald }}>Dashed green</span> = cumulative P/L if every under-3-minute trade were removed — the gap between them is the "patience tax." Amber bar outline = a same-day tilt cluster ({settings.tiltStreakMin}+ losses in a row).
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+            <ChartCard title="Outcome by how long you held the trade" height={220}>
+              <BarChart data={a.durationBuckets} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" {...axisProps} />
+                <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
+                <Tooltip {...tooltipStyle} formatter={(v, name, p) => [name === "netPl" ? fmtMoney(v) : v, name === "netPl" ? "Net P/L" : name]} labelFormatter={(l, p) => `${l} hold · ${p?.[0]?.payload?.n ?? ""} trades · ${p?.[0]?.payload?.winRate ?? ""}% win`} />
+                <Bar dataKey="netPl" radius={[3, 3, 0, 0]}>
+                  {a.durationBuckets.map((d, i) => (
+                    <Cell key={i} fill={d.netPl >= 0 ? C.emerald : C.rose} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ChartCard>
+            <ChartCard title="Net P/L by day of week" height={220}>
+              <BarChart data={a.dowStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="day" {...axisProps} />
+                <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
+                <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} />
+                <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
+                  {a.dowStats.map((d, i) => (
+                    <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ChartCard>
+          </div>
+
+          {a.sessionStats ? (
+            <div className="mb-6">
+              <ChartCard title="Net P/L by trading session (GMT)" height={220}>
+                <BarChart data={a.sessionStats} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke={C.borderSoft} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="session" {...axisProps} />
+                  <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
+                  <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades · ${p?.[0]?.payload?.winRate ?? 0}% win`} />
+                  <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
+                    {a.sessionStats.map((d, i) => (
+                      <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ChartCard>
+            </div>
+          ) : (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>Session view (Asian / London / New York)</span>
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                Set your broker's GMT offset in <span style={{ color: C.amber }}>Settings</span> to split your P/L by trading session — MT5 server time isn't GMT, so the offset is needed to label sessions correctly.
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Calendar</div>
+            <div style={{ overflowX: "auto" }}>
+              <CalendarHeatmap days={a.dailyStats} />
+            </div>
+            <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+              Each cell is a trading day, shaded green (profit) or red (loss) by size. Amber border = a tilt-cluster day.
+            </div>
+          </div>
+
+          {a.balanceOps.length > 0 && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <Wallet size={15} style={{ color: C.amber }} />
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Deposits, withdrawals &amp; transfers</span>
+                <span className="text-xs" style={{ color: C.textFaint }}>({a.balanceOps.length} balance operations)</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <BalanceTotal label="Deposited" value={a.depositsSum} tone="good" />
+                <BalanceTotal label="Withdrawn" value={a.withdrawalsSum} tone="bad" />
+                <BalanceTotal label="Transferred out (skim)" value={a.transferOutSum} tone="amber" />
+                <BalanceTotal label="Transferred in" value={a.transferInSum} tone="good" />
+              </div>
+
+              <div style={{ maxHeight: 260, overflowY: "auto" }}>
+                <table className="w-full text-sm">
+                  <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+                    <tr style={{ color: C.textFaint }}>
+                      <th className="text-left pb-2 text-xs">Date</th>
+                      <th className="text-left pb-2 text-xs">Type</th>
+                      <th className="text-right pb-2 text-xs">Amount</th>
+                      <th className="text-right pb-2 text-xs">Balance after</th>
+                      <th className="text-left pb-2 text-xs pl-3">Comment</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="text-xs mt-3" style={{ color: C.textFaint }}>
-            Net external capital (deposits − withdrawals): {" "}
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: a.netCapital >= 0 ? C.emerald : C.rose }}>{fmtMoney(a.netCapital)}</span>.
-            {" "}Transfers move money between your own accounts, so they net out of ROI; "transfer out" is profit you skimmed off to preserve it.
-          </div>
-        </div>
+                  </thead>
+                  <tbody>
+                    {a.balanceOps.map((op) => {
+                      const meta = OP_KIND[op.kind];
+                      return (
+                        <tr key={op.dealId} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                          <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(op.time)}</td>
+                          <td className="py-1.5">
+                            <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: meta.color, background: meta.bg, whiteSpace: "nowrap" }}>{meta.label}</span>
+                          </td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: op.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(op.profit)}</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{op.balance != null ? fmtMoney(op.balance) : "—"}</td>
+                          <td className="py-1.5 pl-3 text-xs" style={{ color: C.textFaint, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.comment}>{op.comment || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+                Net external capital (deposits − withdrawals): {" "}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: a.netCapital >= 0 ? C.emerald : C.rose }}>{fmtMoney(a.netCapital)}</span>.
+                {" "}Transfers move money between your own accounts, so they net out of ROI; "transfer out" is profit you skimmed off to preserve it.
+              </div>
+            </div>
+          )}
+
+          {priorSection}
+        </>
       )}
 
-      <div className="rounded-xl p-4 mb-2" style={{ border: `0.5px solid ${C.border}` }}>
-        <div className="text-xs leading-relaxed" style={{ color: C.textFaint }}>
-          Calm = under {settings.overtradeThreshold} trades that day. Busy = {settings.overtradeThreshold}+ trades. Tilt = at least {settings.tiltStreakMin} losses
-          in a row on the same day. Files are parsed entirely in your browser; the computed numbers are saved so this dashboard
-          remembers your history the next time you open it. Upload new reports anytime — duplicate trades are matched and skipped
-          by their MT5 ticket ID, so it's safe to re-upload the full history or just a recent slice.
-        </div>
-      </div>
+      {/* ── Trades tab ─────────────────────────────────────────────── */}
+      {activeTab === "trades" && (
+        <>
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <div className="flex items-center gap-2 mb-3">
+              <Flame size={15} style={{ color: C.amber }} />
+              <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Tilt clusters detected</span>
+              <span className="text-xs" style={{ color: C.textFaint }}>({settings.tiltStreakMin}+ same-day losses in a row, plus quick same-symbol re-entries)</span>
+            </div>
+            {a.revengeCount > 0 && (
+              <div className="text-xs mb-3" style={{ color: C.textFaint }}>
+                Also: {a.revengeCount} re-entries within {settings.revengeWindowMin} min of a loss on the same symbol, net {fmtMoney(a.revengePl)}.
+              </div>
+            )}
+            {a.tiltClusters.length === 0 ? (
+              <div className="flex items-center gap-2 text-sm" style={{ color: C.emerald }}>
+                <CircleCheck size={15} /> No tilt clusters in the uploaded data — disciplined across every day so far.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {a.tiltClusters.map((c, i) => (
+                  <div key={i} className="rounded-lg p-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${C.rose}` }}>
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>{fmtDateFull(c.date)}</span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.rose, fontWeight: 500 }}>{fmtMoney(c.pl)}</span>
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: C.textMuted }}>
+                      {fmtTime(c.start)}–{fmtTime(c.end)} · {c.count} losses in a row · {c.symbols.join(", ")}
+                      {c.lotEscalation && <span style={{ color: C.amber }}> · lot size increased mid-streak</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-      {priorSection}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+            <div className="rounded-xl p-4 lg:col-span-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>By symbol</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr style={{ color: C.textFaint }}>
+                    <th className="text-left pb-2 text-xs">Symbol</th>
+                    <th className="text-right pb-2 text-xs">N</th>
+                    <th className="text-right pb-2 text-xs">Win%</th>
+                    <th className="text-right pb-2 text-xs">P/L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a.symbolStats.map((s) => (
+                    <tr key={s.symbol} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                      <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
+                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.n}</td>
+                      <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{s.winRate}%</td>
+                      <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: s.netPl >= 0 ? C.emerald : C.rose }}>{fmtMoney(s.netPl)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-xl p-4 lg:col-span-2" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Daily breakdown</div>
+              <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                <table className="w-full text-sm">
+                  <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+                    <tr style={{ color: C.textFaint }}>
+                      <th className="text-left pb-2 text-xs">Date</th>
+                      <th className="text-right pb-2 text-xs">Trades</th>
+                      <th className="text-right pb-2 text-xs">Win%</th>
+                      <th className="text-right pb-2 text-xs">P/L</th>
+                      <th className="text-right pb-2 text-xs">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {a.dailyStats.slice().reverse().map((d) => {
+                      const stripe = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
+                      const statusText = d.hasTiltCluster ? "Tilt" : d.overtrading ? "Busy" : "Calm";
+                      const statusColor = d.hasTiltCluster ? C.rose : d.overtrading ? C.amber : C.emerald;
+                      return (
+                        <tr key={d.date} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                          <td className="py-1.5" style={{ color: C.text, borderLeft: `3px solid ${stripe}`, paddingLeft: 8 }}>{fmtDateLabel(d.date)}</td>
+                          <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.trades}</td>
+                          <td className="py-1.5 text-right" style={{ color: C.textMuted }}>{d.winRate}%</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: d.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(d.profit)}</td>
+                          <td className="py-1.5 text-right text-xs" style={{ color: statusColor }}>{statusText}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Trades</span>
+              <span className="text-xs" style={{ color: C.textFaint }}>
+                ({a.tradesList.length})
+                {a.avgR != null && (
+                  <> · avg <span style={{ color: a.avgR >= 0 ? C.emerald : C.rose, fontFamily: "'JetBrains Mono', monospace" }}>{a.avgR >= 0 ? "+" : ""}{a.avgR}R</span> over {a.rCount} with a stop</>
+                )}
+              </span>
+              {hasCandleData && (
+                <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: C.amber, background: C.amberDim }}>S1 active</span>
+              )}
+            </div>
+            <div style={{ maxHeight: 460, overflowY: "auto" }}>
+              <table className="w-full text-sm">
+                <thead style={{ position: "sticky", top: 0, background: C.panel }}>
+                  <tr style={{ color: C.textFaint }}>
+                    {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
+                    <th className="text-left pb-2 text-xs">When</th>
+                    <th className="text-left pb-2 text-xs">Symbol</th>
+                    <th className="text-left pb-2 text-xs">Side</th>
+                    <th className="text-right pb-2 text-xs">Hold</th>
+                    <th className="text-right pb-2 text-xs">P/L</th>
+                    <th className="text-right pb-2 text-xs">R</th>
+                    {hasCandleData && <th className="text-center pb-2 text-xs">Structure</th>}
+                    <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140 }}>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a.tradesList.map((t) => {
+                    const v = tradeVerdicts[t.ticket];
+                    const s1 = v && v.s1;
+                    const s6 = v && v.s6;
+                    const isExpanded = expandedTrade === t.ticket;
+                    const s1Color = !s1 ? C.textFaint : s1.verdict === "aligned" ? C.emerald : s1.verdict === "counter" ? C.rose : C.textFaint;
+                    const s1Label = !s1 ? "—" : s1.verdict === "aligned" ? "With" : s1.verdict === "counter" ? "Against" : s1.verdict === "no-structure" ? "No bias" : "—";
+                    return (
+                      <React.Fragment key={t.ticket}>
+                        <tr
+                          style={{ borderTop: `0.5px solid ${C.borderSoft}`, cursor: hasCandleData ? "pointer" : undefined }}
+                          onClick={() => hasCandleData && setExpandedTrade(isExpanded ? null : t.ticket)}
+                        >
+                          {hasCandleData && (
+                            <td className="py-1.5" style={{ color: C.textFaint, width: 20 }}>
+                              {s1 && s1.verdict !== "insufficient" ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
+                            </td>
+                          )}
+                          <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
+                          <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
+                          <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
+                          <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
+                          {hasCandleData && (
+                            <td className="py-1.5 text-center">
+                              <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1 && s1.verdict === "aligned" ? C.emeraldDim : s1 && s1.verdict === "counter" ? C.roseDim : "transparent" }}>{s1Label}</span>
+                            </td>
+                          )}
+                          <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
+                        </tr>
+                        {isExpanded && s1 && (
+                          <tr>
+                            <td colSpan={hasCandleData ? 9 : 7} style={{ padding: 0 }}>
+                              <div className="px-4 py-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${s1Color}` }}>
+                                <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
+                                <div className="text-xs" style={{ color: C.text }}>{s1.detail}</div>
+                                {s1.bias && (
+                                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                    Active bias at entry: <span style={{ color: s1.bias === "bullish" ? C.emerald : C.rose }}>{s1.bias}</span>
+                                  </div>
+                                )}
+                                {s6 && s6.session && (
+                                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                                    S6 — Session: <span style={{ color: C.amber }}>{s6.session}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+              R = profit ÷ risk, where risk = stop distance × volume × an empirically-derived point value per symbol. Trades without a stop-loss show "—". Notes save when you click away.
+              {hasCandleData && " Structure = S1 market structure alignment (BOS/CHoCH). Click a row to expand the verdict."}
+            </div>
+          </div>
+
+          <div className="rounded-xl p-4 mb-2" style={{ border: `0.5px solid ${C.border}` }}>
+            <div className="text-xs leading-relaxed" style={{ color: C.textFaint }}>
+              Calm = under {settings.overtradeThreshold} trades that day. Busy = {settings.overtradeThreshold}+ trades. Tilt = at least {settings.tiltStreakMin} losses
+              in a row on the same day.
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Strategy tab ───────────────────────────────────────────── */}
+      {activeTab === "strategy" && (
+        <>
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${hasCandleData ? C.amberDim : C.border}` }}>
+            <div className="flex items-center gap-2 mb-2">
+              <BarChart3 size={15} style={{ color: C.amber }} />
+              <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Strategy overlay — candle data</span>
+            </div>
+            {hasCandleData ? (
+              <>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {Object.entries(candleIndex).map(([key, ci]) => (
+                    <span key={key} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                      {ci.symbol} {ci.timeframe} — {ci.count.toLocaleString()} bars
+                    </span>
+                  ))}
+                </div>
+                <div className="text-xs" style={{ color: C.textFaint }}>
+                  S1 (market structure) verdicts are active in the Trades tab. Click any row to expand the verdict. Strategies are computed as a causal forward pass — each bar only sees prior data, no repainting.
+                </div>
+              </>
+            ) : (
+              <div className="text-xs" style={{ color: C.textFaint }}>
+                Upload candle CSVs (MT5 chart export) via the <span style={{ color: C.amber }}>Candles</span> button to enable strategy verdicts. In MT5: open the chart → right-click → Save As CSV, or use View → Symbols → Bars/History. Start with your primary symbol (GOLD) on M5.
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Active strategies</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[
+                { id: "S1", name: "Market Structure", desc: "BOS/CHoCH bias alignment", active: hasCandleData, color: C.emerald },
+                { id: "S2", name: "Order Blocks", desc: "Entry at opposing-candle zones", active: false, color: C.textFaint },
+                { id: "S3", name: "Fair Value Gaps", desc: "3-candle imbalance zones", active: false, color: C.textFaint },
+                { id: "S4", name: "Liquidity Sweeps", desc: "Wick-through-swing reversals", active: false, color: C.textFaint },
+                { id: "S5", name: "Volume Profile", desc: "POC / VAH / VAL levels", active: false, color: C.textFaint },
+                { id: "S6", name: "Session Context", desc: "Asian / London / New York", active: settings.brokerGmtOffsetHours != null, color: C.amber },
+              ].map((s) => (
+                <div key={s.id} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}`, opacity: s.active ? 1 : 0.5 }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-mono" style={{ color: s.active ? s.color : C.textFaint }}>{s.id}</span>
+                    <span className="text-sm" style={{ color: s.active ? C.text : C.textMuted }}>{s.name}</span>
+                  </div>
+                  <div className="text-xs" style={{ color: C.textFaint }}>{s.desc}</div>
+                  <div className="text-xs mt-1" style={{ color: s.active ? s.color : C.textFaint }}>
+                    {s.active ? "Active" : "Coming soon"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl p-4 mb-6" style={{ border: `0.5px solid ${C.border}` }}>
+            <div className="text-xs leading-relaxed" style={{ color: C.textFaint }}>
+              All strategies use a causal forward pass — bar <em>i</em> only sees bars ≤ <em>i</em>, no repainting. Verdicts are a consistent rules-based approximation, not full discretionary chart-reading judgment.
+              Files are parsed entirely in your browser; nothing leaves your machine.
+            </div>
+          </div>
+        </>
+      )}
+
       {settingsModal}
     </div>
   );
