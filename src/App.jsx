@@ -224,11 +224,13 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
   const dailyStats = Array.from(dailyMap.entries())
     .map(([date, trades]) => {
       const profit = trades.reduce((s, t) => s + t.profit, 0);
+      const disciplined = trades.filter((t) => t.durationMin >= 3).reduce((s, t) => s + t.profit, 0);
       const wins = trades.filter((t) => t.profit > 0).length;
       return {
         date,
         trades: trades.length,
         profit: round2(profit),
+        disciplinedProfit: round2(disciplined),
         winRate: round1((wins / trades.length) * 100),
         overtrading: trades.length >= settings.overtradeThreshold,
         hasTiltCluster: tiltDates.has(date),
@@ -237,9 +239,12 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     .sort((a, b) => a.date.localeCompare(b.date));
 
   let cum = 0;
+  let cumDisc = 0;
   dailyStats.forEach((d) => {
     cum += d.profit;
+    cumDisc += d.disciplinedProfit;
     d.cumProfit = round2(cum);
+    d.cumDisciplined = round2(cumDisc); // cumulative P/L if under-3-min trades were excluded
     d.label = fmtDateLabel(d.date);
   });
 
@@ -346,18 +351,29 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
       currentBalance = lastOp.balance + plAfter;
     }
   }
-  // Phase 1 "balance drawdown (approximate)" — walks only balance-type rows, so
-  // this is balance-curve drawdown, not intra-trade equity drawdown (spec §6).
+  // True equity-curve drawdown (spec §6/§7): replay each closed trade's net result
+  // in close-time order against the period's opening balance, then take the worst
+  // peak-to-trough drop on that curve. Deposits/withdrawals are flows, not trading
+  // P/L, so the curve is trades-only — this measures how far your *trading* fell
+  // from its high-water mark, in $ and as % of that peak.
+  const startEquity = bops.length && bops[0].balance != null ? bops[0].balance : 0;
+  const tradeFlows = pos
+    .map((p) => ({ t: p.closeTime.getTime(), pl: p.profit + (p.commission || 0) + (p.swap || 0) }))
+    .sort((a, b) => a.t - b.t);
+  let equity = startEquity;
+  let peakEquity = startEquity;
+  let maxDrawdownAmt = 0;
   let maxDrawdownPct = 0;
-  if (bops.length) {
-    let peak = -Infinity;
-    bops.forEach((b) => {
-      if (b.balance != null) {
-        if (b.balance > peak) peak = b.balance;
-        if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, ((peak - b.balance) / peak) * 100);
-      }
-    });
-  }
+  tradeFlows.forEach((f) => {
+    equity += f.pl;
+    if (equity > peakEquity) peakEquity = equity;
+    const dd = peakEquity - equity;
+    if (dd > maxDrawdownAmt) maxDrawdownAmt = dd;
+    if (peakEquity > 0) {
+      const ddPct = (dd / peakEquity) * 100;
+      if (ddPct > maxDrawdownPct) maxDrawdownPct = ddPct;
+    }
+  });
   const roiPct = depositsTotal > 0 ? (netProfit / depositsTotal) * 100 : null;
 
   return {
@@ -371,6 +387,7 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     largestLoss: pos.length ? round2(Math.min(...pos.map((p) => p.profit))) : 0,
     currentBalance: currentBalance != null ? round2(currentBalance) : null,
     maxDrawdownPct: round1(maxDrawdownPct),
+    maxDrawdownAmt: round2(maxDrawdownAmt),
     roiPct: roiPct != null ? round1(roiPct) : null,
     depositsTotal: round2(depositsTotal),
     daysTracked: dailyStats.length,
@@ -902,7 +919,7 @@ export default function TradingJournal() {
         <StatCard icon={TrendingUp} label="Net trading P/L" value={fmtMoney(a.netProfit)} tone={a.netProfit >= 0 ? "good" : "bad"} sub={`${a.totalTrades} trades`} />
         <StatCard icon={Target} label="Win rate" value={fmtPct(a.winRate)} sub={`PF ${a.profitFactor ?? "—"}`} />
         <StatCard icon={Wallet} label="Current balance" value={fmtMoney(a.currentBalance)} sub={`ROI ${fmtPct(a.roiPct)}`} />
-        <StatCard icon={AlertTriangle} label="Balance drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={`${a.daysTracked} active days`} />
+        <StatCard icon={AlertTriangle} label="Max drawdown" value={fmtPct(a.maxDrawdownPct)} tone={a.maxDrawdownPct > 50 ? "bad" : undefined} sub={a.maxDrawdownAmt > 0 ? `${fmtMoney(-a.maxDrawdownAmt)} peak-to-trough` : `${a.daysTracked} active days`} />
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -944,10 +961,11 @@ export default function TradingJournal() {
               ))}
             </Bar>
             <Line yAxisId="right" type="monotone" dataKey="cumProfit" name="Cumulative" stroke={C.amber} strokeWidth={2} dot={{ r: 2, fill: C.amber }} />
+            <Line yAxisId="right" type="monotone" dataKey="cumDisciplined" name="If 3min+ only" stroke={C.emerald} strokeWidth={2} strokeDasharray="4 3" dot={false} />
           </ComposedChart>
         </ChartCard>
         <div className="text-xs mt-2" style={{ color: C.textFaint }}>
-          Amber outline = a same-day tilt cluster ({settings.tiltStreakMin}+ losses in a row) happened that day.
+          Amber line = actual cumulative P/L. <span style={{ color: C.emerald }}>Dashed green</span> = cumulative P/L if every under-3-minute trade were removed — the gap between them is the "patience tax." Amber bar outline = a same-day tilt cluster ({settings.tiltStreakMin}+ losses in a row).
         </div>
       </div>
 
