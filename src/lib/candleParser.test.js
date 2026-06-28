@@ -83,3 +83,41 @@ describe("candleStorageKey", () => {
     expect(candleStorageKey("GOLD", "M5")).toBe("tj_candles_GOLD_M5");
   });
 });
+
+describe("inferSymbolTimeframe — cleaning & fallbacks", () => {
+  it("strips broker suffixes (.i, #) from the symbol", () => {
+    expect(inferSymbolTimeframe("GOLD.i__H4_202601.csv")).toEqual({ symbol: "GOLD", timeframe: "H4" });
+    expect(inferSymbolTimeframe("EURUSD#__M15_x.csv")).toEqual({ symbol: "EURUSD", timeframe: "M15" });
+  });
+  it("falls back to a timeframe token in a hyphenated name", () => {
+    expect(inferSymbolTimeframe("BTCUSD-H4-data.csv")).toEqual({ symbol: "BTCUSD", timeframe: "H4" });
+  });
+  it("returns timeframe null when none is present", () => {
+    expect(inferSymbolTimeframe("randomfile.csv")).toEqual({ symbol: "randomfile", timeframe: null });
+  });
+});
+
+describe("parseCandleCSV — robustness", () => {
+  it("handles CRLF line endings", () => {
+    const csv = [
+      row("2026.05.01", "01:00:00", "100", "101", "99", "100"),
+      row("2026.05.01", "01:05:00", "100", "102", "98", "101"),
+    ].join("\r\n");
+    expect(parseCandleCSV(csv).candles).toHaveLength(2);
+  });
+  it("skips a lowercase 'date' header row without counting it as skipped", () => {
+    const csv = ["date\ttime\topen\thigh\tlow\tclose\ttickvol", row("2026.05.01", "01:00:00", "100", "101", "99", "100")].join("\n");
+    const { candles, skipped } = parseCandleCSV(csv);
+    expect(candles).toHaveLength(1);
+    expect(skipped).toBe(0);
+  });
+  it("defaults tick volume to 0 when it is missing or non-numeric", () => {
+    const { candles } = parseCandleCSV(row("2026.05.01", "01:00:00", "100", "101", "99", "100", "notnum"));
+    expect(candles[0].tickVolume).toBe(0);
+  });
+  it("accepts a minimal 7-column row (no VOL/SPREAD)", () => {
+    const { candles, skipped } = parseCandleCSV("2026.05.01\t01:00:00\t100\t101\t99\t100\t50");
+    expect(skipped).toBe(0);
+    expect(candles[0]).toMatchObject({ open: 100, close: 100, tickVolume: 50 });
+  });
+});
