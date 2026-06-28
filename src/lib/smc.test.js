@@ -4,7 +4,7 @@ import {
   detectFVGs, activeFVGsAtBar, detectLiquiditySweeps,
   detectOrderBlocks, activeOBsAtBar,
   computeS1Verdict, sessionAtTime,
-  precomputeSmcState, scanSetups,
+  precomputeSmcState, scanSetups, findBarAtTime,
 } from "./smc.js";
 
 // Build a candle from O/H/L/C (time/volume don't matter for geometry tests).
@@ -141,6 +141,33 @@ describe("sessionAtTime", () => {
   });
   it("returns null when no offset is configured", () => {
     expect(sessionAtTime(new Date(), null)).toBe(null);
+  });
+});
+
+describe("findBarAtTime", () => {
+  // Distinct ascending timestamps (5 min apart) — the production case where the
+  // binary search must return the rightmost bar with time <= the query.
+  const base = Date.parse("2026-01-01T00:00:00Z");
+  const candles = Array.from({ length: 10 }, (_, i) => ({
+    ...k(1, 1, 1, 1),
+    time: new Date(base + i * 300000).toISOString(),
+  }));
+  const at = (i, offsetMs = 0) => new Date(base + i * 300000 + offsetMs).toISOString();
+
+  it("returns -1 when the query is before the first bar", () => {
+    expect(findBarAtTime(candles, at(0, -1))).toBe(-1);
+  });
+  it("returns the exact bar when the query equals a bar time", () => {
+    expect(findBarAtTime(candles, at(4))).toBe(4);
+  });
+  it("returns the earlier bar when the query falls between two bars", () => {
+    expect(findBarAtTime(candles, at(4, 60000))).toBe(4);
+  });
+  it("returns the last bar when the query is after the final bar", () => {
+    expect(findBarAtTime(candles, at(9, 999999))).toBe(9);
+  });
+  it("returns -1 for an empty candle array", () => {
+    expect(findBarAtTime([], at(0))).toBe(-1);
   });
 });
 

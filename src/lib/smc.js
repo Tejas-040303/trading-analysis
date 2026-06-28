@@ -395,34 +395,55 @@ export function computeS3Verdict(candles, trade, fvgs, lookback) {
 
 export function detectLiquiditySweeps(candles, swings) {
   const sweeps = []; // { type: "bullish"|"bearish", barIndex, swingPrice, wickDepth }
+  if (!candles.length || !swings.length) return sweeps;
+
+  // A sweep only happens at swing levels the bar's wick actually pierced, so
+  // instead of re-scanning every confirmed swing at every bar (O(n·S), ≈ O(n²)),
+  // index swing prices once and binary-search just the levels inside each bar's
+  // wick range. `ord` = the swing's position in the (confirmedAt, index)-sorted
+  // input, so within a bar we emit matches in that same order — the output array
+  // stays byte-identical to the old linear scan (computeS4Verdict depends on it).
+  const lows = [];
+  const highs = [];
+  swings.forEach((sw, ord) => {
+    (sw.type === "low" ? lows : highs).push({ sw, ord });
+  });
+  lows.sort((a, b) => a.sw.price - b.sw.price);
+  highs.sort((a, b) => a.sw.price - b.sw.price);
+
+  const firstGT = (arr, x) => { // first index with price strictly > x
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].sw.price > x) hi = m; else lo = m + 1; }
+    return lo;
+  };
+  const firstGE = (arr, x) => { // first index with price >= x
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].sw.price >= x) hi = m; else lo = m + 1; }
+    return lo;
+  };
 
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
-    // Check confirmed swings visible at bar i
-    for (const sw of swings) {
-      if (sw.confirmedAt > i) break;
+    const matches = [];
 
-      // Bullish sweep: wick dips below a swing low but closes above it
-      if (sw.type === "low" && c.low < sw.price && c.close > sw.price) {
-        sweeps.push({
-          type: "bullish",
-          barIndex: i,
-          swingIndex: sw.index,
-          swingPrice: sw.price,
-          wickDepth: sw.price - c.low,
-        });
+    // Bullish: wick dips below a swing low (price > c.low) but closes above it (price < c.close).
+    if (c.close > c.low) {
+      for (let j = firstGT(lows, c.low), end = firstGE(lows, c.close); j < end; j++) {
+        if (lows[j].sw.confirmedAt <= i) matches.push({ ord: lows[j].ord, type: "bullish", sw: lows[j].sw });
       }
+    }
+    // Bearish: wick pierces above a swing high (price < c.high) but closes below it (price > c.close).
+    if (c.high > c.close) {
+      for (let j = firstGT(highs, c.close), end = firstGE(highs, c.high); j < end; j++) {
+        if (highs[j].sw.confirmedAt <= i) matches.push({ ord: highs[j].ord, type: "bearish", sw: highs[j].sw });
+      }
+    }
 
-      // Bearish sweep: wick pierces above a swing high but closes below it
-      if (sw.type === "high" && c.high > sw.price && c.close < sw.price) {
-        sweeps.push({
-          type: "bearish",
-          barIndex: i,
-          swingIndex: sw.index,
-          swingPrice: sw.price,
-          wickDepth: c.high - sw.price,
-        });
-      }
+    if (matches.length > 1) matches.sort((a, b) => a.ord - b.ord);
+    for (const m of matches) {
+      sweeps.push(m.type === "bullish"
+        ? { type: "bullish", barIndex: i, swingIndex: m.sw.index, swingPrice: m.sw.price, wickDepth: m.sw.price - c.low }
+        : { type: "bearish", barIndex: i, swingIndex: m.sw.index, swingPrice: m.sw.price, wickDepth: c.high - m.sw.price });
     }
   }
 
@@ -607,11 +628,15 @@ export function sessionAtTime(openTime, brokerGmtOffsetHours) {
 
 export function findBarAtTime(candles, tradeOpenTime) {
   const t = new Date(tradeOpenTime).getTime();
-  let best = -1;
-  for (let i = 0; i < candles.length; i++) {
-    const ct = new Date(candles[i].time).getTime();
-    if (ct <= t) best = i;
-    else break;
+  // Candles are stored time-sorted ascending (mergeCandles sorts on insert), so
+  // binary-search the rightmost bar with time <= t instead of scanning linearly.
+  // This runs once per trade per strategy, so O(log n) vs O(n) is a real win on
+  // large candle sets. Returns -1 if every bar is after t (same as the old scan).
+  let lo = 0, hi = candles.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (new Date(candles[mid].time).getTime() <= t) { best = mid; lo = mid + 1; }
+    else { hi = mid - 1; }
   }
   return best;
 }
