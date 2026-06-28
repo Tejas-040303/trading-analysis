@@ -104,7 +104,7 @@ const numOrNull = (v) => {
 };
 const cleanSymbol = (s) => String(s || "").replace("#", "").replace(".i", "");
 
-function parseWorkbookRows(rows) {
+export function parseWorkbookRows(rows) {
   const idxPositions = rows.findIndex((r) => r[0] === "Positions");
   const idxOrders = rows.findIndex((r) => r[0] === "Orders");
   const idxDeals = rows.findIndex((r) => r[0] === "Deals");
@@ -169,7 +169,7 @@ function parseWorkbookRows(rows) {
   return { positions, balanceOps, meta, skipped };
 }
 
-function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTINGS) {
+export function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTINGS) {
   if (!rawPositions.length) return null;
   const pos = rawPositions
     .map((p) => {
@@ -554,7 +554,7 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
   };
 }
 
-function summarizePrior(priorPositions, priorBalanceOps) {
+export function summarizePrior(priorPositions, priorBalanceOps) {
   if (!priorPositions.length && !priorBalanceOps.length) return null;
   const net = priorPositions.reduce((s, p) => s + p.profit, 0);
   const wins = priorPositions.filter((p) => p.profit > 0).length;
@@ -915,13 +915,13 @@ const CONFLUENCE_MAX = CONFLUENCE_RULES.length;
 
 // Extract #hashtags from a free-text note. Reuses the existing note field, so
 // tags need no new storage or migration — type "#fomo revenge entry" and it's tagged.
-function parseTags(note) {
+export function parseTags(note) {
   const m = (note || "").match(/#[\w-]+/g);
   if (!m) return [];
   return [...new Set(m.map((t) => t.toLowerCase()))];
 }
 
-function confluenceOf(verdict) {
+export function confluenceOf(verdict) {
   const hits = [];
   let scored = 0; // how many strategies had a usable (non-null) verdict
   for (const r of CONFLUENCE_RULES) {
