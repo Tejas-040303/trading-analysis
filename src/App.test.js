@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { computeAnalytics, parseWorkbookRows, parseTags, confluenceOf } from "./App.jsx";
+import { computeAnalytics } from "./App.jsx";
+import { parseWorkbookRows, parseTags, confluenceOf } from "./lib/analytics.js";
 
 // Build an ISO string from LOCAL components (matches how the app stores times).
 const iso = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi, 0).toISOString();
