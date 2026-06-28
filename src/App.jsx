@@ -12,7 +12,7 @@ import {
 import * as XLSX from "xlsx";
 import { storage, estimateUsageBytes } from "./lib/storage";
 import { parseCandleCSV, inferSymbolTimeframe, mergeCandles, candleStorageKey } from "./lib/candleParser";
-import { computeTradeVerdicts, precomputeSmcState } from "./lib/smc";
+import { computeTradeVerdicts, precomputeSmcState, scanSetups } from "./lib/smc";
 
 // User-editable settings, persisted to tj_settings via the Settings panel.
 const DEFAULT_SETTINGS = {
@@ -951,7 +951,7 @@ export default function TradingJournal() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
   const [tradeSort, setTradeSort] = useState({ col: "openTime", dir: "desc" });
-  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "", minConfluence: "", tag: "" });
+  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "", minConfluence: "", tag: "", strategyVerdict: "" });
   const [dailySort, setDailySort] = useState({ col: "date", dir: "desc" });
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
@@ -1267,6 +1267,13 @@ export default function TradingJournal() {
     if (tradeFilter.tag) {
       list = list.filter((t) => parseTags(t.note).includes(tradeFilter.tag));
     }
+    if (tradeFilter.strategyVerdict && hasCandleData) {
+      const [key, verdict] = tradeFilter.strategyVerdict.split(":");
+      list = list.filter((t) => {
+        const v = tradeVerdicts[t.ticket];
+        return v && v[key] && v[key].verdict === verdict;
+      });
+    }
     // Sort
     const dir = tradeSort.dir === "asc" ? 1 : -1;
     list.sort((a, b) => {
@@ -1375,6 +1382,49 @@ export default function TradingJournal() {
       confluence: { byScore, high: stats(confHigh), low: stats(confLow) },
     };
   }, [analytics, tradeVerdicts]);
+
+  // Setup scan (P4) — run the SMC rules over ALL candles to find every setup,
+  // then match each against executed trades to split "taken" vs "skipped".
+  const setupScan = useMemo(() => {
+    if (!analytics || !hasCandleData) return null;
+    const lookback = settings.swingLookback || 5;
+    const matchMs = 15 * 60 * 1000; // a trade counts as "taking" a setup if it opened within 15 min, same side
+    const tradesBySymbol = {};
+    analytics.tradesList.forEach((t) => { (tradesBySymbol[t.symbol] = tradesBySymbol[t.symbol] || []).push(t); });
+
+    const all = [];
+    Object.values(candleIndex).forEach((ci) => {
+      const candles = storage.get(candleStorageKey(ci.symbol, ci.timeframe));
+      if (!candles || !candles.length) return;
+      const smc = precomputeSmcState(candles, lookback);
+      if (!smc) return;
+      const setups = scanSetups(candles, smc, { swingLookback: lookback, minScore: 3 });
+      const symTrades = tradesBySymbol[ci.symbol] || [];
+      setups.forEach((s) => {
+        const st = new Date(s.time).getTime();
+        const taken = symTrades.find((t) => t.type === s.side && Math.abs(new Date(t.openTime).getTime() - st) <= matchMs);
+        all.push({ ...s, symbol: ci.symbol, timeframe: ci.timeframe, taken: !!taken, takenTrade: taken || null });
+      });
+    });
+    all.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    const taken = all.filter((s) => s.taken);
+    const skipped = all.filter((s) => !s.taken);
+    const avg = (arr, key) => {
+      const vals = arr.map((s) => s[key]).filter((v) => v != null);
+      return vals.length ? round2(vals.reduce((x, y) => x + y, 0) / vals.length) : null;
+    };
+    return {
+      all, taken, skipped,
+      total: all.length,
+      takenCount: taken.length,
+      skippedCount: skipped.length,
+      takenPct: all.length ? round1((taken.length / all.length) * 100) : 0,
+      takenAvgMfeR: avg(taken, "mfeR"),
+      skippedAvgMfeR: avg(skipped, "mfeR"),
+      skippedAvgMaeR: avg(skipped, "maeR"),
+    };
+  }, [analytics, candleIndex, hasCandleData, settings.swingLookback]);
 
   const toggleSort = (col) => setTradeSort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
   const toggleDailySort = (col) => setDailySort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
@@ -2009,14 +2059,38 @@ export default function TradingJournal() {
                   <option value="5">5 confluences</option>
                 </select>
               )}
+              {hasCandleData && (
+                <select value={tradeFilter.strategyVerdict} onChange={(e) => setTradeFilter((p) => ({ ...p, strategyVerdict: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }} title="Filter by a single strategy's verdict">
+                  <option value="">Any strategy verdict</option>
+                  <optgroup label="S2 — Order Block">
+                    <option value="s2:at-ob">At OB zone</option>
+                    <option value="s2:near-ob">Near OB</option>
+                    <option value="s2:no-ob">No active OB</option>
+                  </optgroup>
+                  <optgroup label="S3 — Fair Value Gap">
+                    <option value="s3:at-fvg">At FVG zone</option>
+                    <option value="s3:near-fvg">Near FVG</option>
+                    <option value="s3:no-fvg">No active FVG</option>
+                  </optgroup>
+                  <optgroup label="S4 — Liquidity Sweep">
+                    <option value="s4:swept">Sweep before entry</option>
+                    <option value="s4:no-sweep">No sweep</option>
+                  </optgroup>
+                  <optgroup label="S5 — Volume Profile">
+                    <option value="s5:at-poc">At POC</option>
+                    <option value="s5:in-va">In Value Area</option>
+                    <option value="s5:outside-va">Outside Value Area</option>
+                  </optgroup>
+                </select>
+              )}
               {allTags.length > 0 && (
                 <select value={tradeFilter.tag} onChange={(e) => setTradeFilter((p) => ({ ...p, tag: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
                   <option value="">All tags</option>
                   {allTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
                 </select>
               )}
-              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure || tradeFilter.minConfluence || tradeFilter.tag) && (
-                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "", minConfluence: "", tag: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
+              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure || tradeFilter.minConfluence || tradeFilter.tag || tradeFilter.strategyVerdict) && (
+                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "", minConfluence: "", tag: "", strategyVerdict: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
               )}
             </div>
             <div style={{ maxHeight: 460, overflow: "auto" }}>
@@ -2286,6 +2360,70 @@ export default function TradingJournal() {
               </div>
               <div className="text-xs mt-3" style={{ color: C.textFaint }}>
                 Confluence = how many of the 5 setup strategies fired supportively at entry: S1 aligned, S2 at an order block, S3 at an FVG, S4 a liquidity sweep, S5 at POC/in value area. (S6 session is context, not counted.) Only trades with candle data are included. If higher confluence shows a higher win rate, stacking setups is adding edge.
+              </div>
+            </div>
+          )}
+
+          {/* Setup scan — setups you took vs skipped */}
+          {setupScan && setupScan.total > 0 && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.amberDim}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <BarChart3 size={15} style={{ color: C.amber }} />
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Setup scan — did you take the setups your rules found?</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                  <div className="text-xs mb-1" style={{ color: C.textMuted }}>Setups found</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: C.text }}>{setupScan.total}</div>
+                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>≥3-confluence, across all candles</div>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                  <div className="text-xs mb-1" style={{ color: C.emerald }}>Taken</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: C.emerald }}>{setupScan.takenCount}</div>
+                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>{setupScan.takenPct}% of setups · {setupScan.takenAvgMfeR != null ? `${setupScan.takenAvgMfeR}R avg reach` : "—"}</div>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                  <div className="text-xs mb-1" style={{ color: C.rose }}>Skipped</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: C.rose }}>{setupScan.skippedCount}</div>
+                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>setups you didn't trade</div>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}` }}>
+                  <div className="text-xs mb-1" style={{ color: C.amber }}>Skipped — hypothetical reach</div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: C.amber }}>{setupScan.skippedAvgMfeR != null ? `${setupScan.skippedAvgMfeR}R` : "—"}</div>
+                  <div className="text-xs mt-1" style={{ color: C.textFaint }}>avg max favourable move {setupScan.skippedAvgMaeR != null ? `· ${setupScan.skippedAvgMaeR}R adverse` : ""}</div>
+                </div>
+              </div>
+
+              {setupScan.skipped.length > 0 && (
+                <div style={{ maxHeight: 300, overflow: "auto" }}>
+                  <table className="text-sm" style={{ minWidth: 560, width: "100%" }}>
+                    <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
+                      <tr style={{ color: C.textFaint }}>
+                        <th className="text-left pb-2 text-xs">When (skipped)</th>
+                        <th className="text-left pb-2 text-xs">Symbol</th>
+                        <th className="text-left pb-2 text-xs">Side</th>
+                        <th className="text-left pb-2 text-xs">Confluence</th>
+                        <th className="text-right pb-2 text-xs">Hyp. reach</th>
+                        <th className="text-right pb-2 text-xs">Hyp. adverse</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {setupScan.skipped.slice(0, 100).map((s, i) => (
+                        <tr key={i} style={{ borderTop: `0.5px solid ${C.borderSoft}` }}>
+                          <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(s.time)}</td>
+                          <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
+                          <td className="py-1.5" style={{ color: s.side === "buy" ? C.emerald : C.rose }}>{s.side}</td>
+                          <td className="py-1.5 text-xs" style={{ color: C.textMuted }}>{s.score}/4 · {s.hits.join(", ")}</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.amber }}>{s.mfeR != null ? `${s.mfeR.toFixed(2)}R` : "—"}</td>
+                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textFaint }}>{s.maeR != null ? `${s.maeR.toFixed(2)}R` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+                A "setup" = the rules found ≥3 confluences (structure + an OB/FVG zone, often a sweep) in the prevailing direction. "Taken" = you opened a same-side trade within 15 min of it. <span style={{ color: C.amber }}>Hypothetical reach</span> is the max favourable move over the next 24 bars vs a recent-swing stop — <strong>not</strong> a backtest of real entries/exits, just how far price travelled after each setup. Treat it as a discipline mirror (did I act on my own setups?), not a P/L claim.
               </div>
             </div>
           )}

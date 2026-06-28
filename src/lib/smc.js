@@ -690,3 +690,102 @@ export function computeTradeVerdicts(candles, trade, settings = {}, smcState = n
 
   return result;
 }
+
+// Active (unfilled) FVGs in a direction at a given bar — causal, mirrors activeOBsAtBar.
+export function activeFVGsAtBar(fvgs, barIndex, direction) {
+  return fvgs.filter(
+    (f) =>
+      f.direction === direction &&
+      f.formIndex <= barIndex &&
+      (f.filledAt === null || f.filledAt > barIndex)
+  );
+}
+
+// ── Setup scan (P4) ──────────────────────────────────────────────────────
+// Walks EVERY bar (causally) and emits the discrete SMC setups the rules find —
+// not just the bars you traded. This is what lets us compare setups you TOOK
+// against setups you SKIPPED. A setup fires when, in the prevailing structure
+// direction, price is sitting in an order block or FVG zone with enough
+// confluence. Each setup carries a forward max-favourable/adverse excursion
+// (in R, vs a recent-swing stop) as a *hypothetical* outcome — NOT a backtest of
+// your real exits, just "how far did price travel after this setup."
+export function scanSetups(candles, smcState, opts = {}) {
+  if (!candles || !smcState) return [];
+  const { structure, orderBlocks, fvgs, sweeps } = smcState;
+  const lookback = opts.swingLookback || 5;
+  const minScore = opts.minScore || 3;      // of 4 possible (S1 bias + S2 OB + S3 FVG + S4 sweep)
+  const cooldown = opts.cooldown || 12;     // bars to suppress repeat setups in the same direction
+  const fwd = opts.forwardBars || 24;       // bars over which to measure the hypothetical outcome
+  const sweepWindow = 10;
+
+  const setups = [];
+  const lastEmit = { bullish: -Infinity, bearish: -Infinity };
+
+  for (let i = lookback * 2; i < candles.length; i++) {
+    const { bias } = biasAtBar(structure, i);
+    if (!bias) continue;
+    const dir = bias;
+    if (i - lastEmit[dir] < cooldown) continue;
+
+    const entry = candles[i].close;
+
+    // Require a zone to enter at — an active OB or FVG in the bias direction touching price.
+    const atOB = activeOBsAtBar(orderBlocks, i, dir).some((ob) => entry >= ob.low && entry <= ob.high);
+    const atFVG = activeFVGsAtBar(fvgs, i, dir).some((f) => entry >= f.low && entry <= f.high);
+    if (!atOB && !atFVG) continue;
+
+    const swept = sweeps.some((s) => s.type === dir && s.barIndex <= i && s.barIndex >= i - sweepWindow);
+
+    const hits = ["S1"];
+    if (atOB) hits.push("S2");
+    if (atFVG) hits.push("S3");
+    if (swept) hits.push("S4");
+    const score = hits.length; // max 4
+    if (score < minScore) continue;
+
+    // Protective stop = recent swing extreme over the last lookback*2 bars.
+    const from = Math.max(0, i - lookback * 2);
+    let stop;
+    if (dir === "bullish") {
+      let lo = Infinity;
+      for (let j = from; j <= i; j++) lo = Math.min(lo, candles[j].low);
+      stop = lo;
+    } else {
+      let hi = -Infinity;
+      for (let j = from; j <= i; j++) hi = Math.max(hi, candles[j].high);
+      stop = hi;
+    }
+    const risk = Math.abs(entry - stop);
+
+    // Forward excursion over the next `fwd` bars (hypothetical, not your real exit).
+    const end = Math.min(candles.length - 1, i + fwd);
+    let mfe = 0, mae = 0;
+    for (let j = i + 1; j <= end; j++) {
+      if (dir === "bullish") {
+        mfe = Math.max(mfe, candles[j].high - entry);
+        mae = Math.max(mae, entry - candles[j].low);
+      } else {
+        mfe = Math.max(mfe, entry - candles[j].low);
+        mae = Math.max(mae, candles[j].high - entry);
+      }
+    }
+    const mfeR = risk > 0 && Number.isFinite(mfe / risk) ? mfe / risk : null;
+    const maeR = risk > 0 && Number.isFinite(mae / risk) ? mae / risk : null;
+
+    setups.push({
+      barIndex: i,
+      time: candles[i].time,
+      direction: dir,
+      side: dir === "bullish" ? "buy" : "sell",
+      entry,
+      score,
+      hits,
+      atOB, atFVG, swept,
+      risk: risk > 0 ? risk : null,
+      mfeR,
+      maeR,
+    });
+    lastEmit[dir] = i;
+  }
+  return setups;
+}
