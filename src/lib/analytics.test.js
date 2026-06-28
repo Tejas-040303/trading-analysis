@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { computeAnalytics, parseWorkbookRows, parseTags, confluenceOf } from "./analytics.js";
+import {
+  computeAnalytics, parseWorkbookRows, parseTags, confluenceOf,
+  parseMT5DateTime, numOrNull, cleanSymbol, tradeDate, summarizePrior,
+} from "./analytics.js";
 
 // Build an ISO string from LOCAL components (matches how the app stores times).
 const iso = (y, mo, d, h, mi, s = 0) => new Date(y, mo - 1, d, h, mi, s).toISOString();
@@ -296,5 +299,115 @@ describe("computeAnalytics — symbol and day-of-week grouping", () => {
     // 2026-06-01 is a Monday (getDay() === 1), both GOLD trades opened at hour 10/11
     expect(a.todGrid["1-10"]).toMatchObject({ n: 1, wins: 1 });
     expect(a.todGrid["1-11"]).toMatchObject({ n: 1, wins: 0 });
+  });
+});
+
+describe("parseMT5DateTime", () => {
+  it("parses the MT5 'YYYY.MM.DD HH:MM:SS' string into a local Date", () => {
+    const d = parseMT5DateTime("2026.06.01 10:05:30");
+    expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()])
+      .toEqual([2026, 5, 1, 10, 5, 30]);
+  });
+  it("parses an Excel serial number from the 1899-12-30 epoch", () => {
+    expect(parseMT5DateTime(25569).toISOString()).toBe("1970-01-01T00:00:00.000Z");
+    expect(parseMT5DateTime(25570).toISOString()).toBe("1970-01-02T00:00:00.000Z");
+  });
+  it("returns null for unparseable input", () => {
+    expect(parseMT5DateTime(null)).toBe(null);
+    expect(parseMT5DateTime("not a date")).toBe(null);
+    expect(parseMT5DateTime({})).toBe(null);
+  });
+});
+
+describe("numOrNull / cleanSymbol / tradeDate", () => {
+  it("numOrNull coerces numeric values and nulls the rest", () => {
+    expect(numOrNull(5)).toBe(5);
+    expect(numOrNull("3.14")).toBe(3.14);
+    expect(numOrNull("")).toBe(null);
+    expect(numOrNull(null)).toBe(null);
+    expect(numOrNull("abc")).toBe(null);
+  });
+  it("cleanSymbol strips broker # and .i suffixes", () => {
+    expect(cleanSymbol("GOLD.i#")).toBe("GOLD");
+    expect(cleanSymbol("BTCUSD")).toBe("BTCUSD");
+    expect(cleanSymbol(null)).toBe("");
+  });
+  it("tradeDate buckets by local wall-clock day, zero-padded", () => {
+    expect(tradeDate(new Date(2026, 0, 5, 23, 30))).toBe("2026-01-05");
+    expect(tradeDate(new Date(2026, 11, 31, 0, 0))).toBe("2026-12-31");
+  });
+});
+
+describe("parseWorkbookRows — Deals / balance operations", () => {
+  it("reads balance-type deals, skips non-balance deals, and stops at 'Balance:'", () => {
+    const rows = [
+      ["Positions"],
+      ["Time", "Position", "Symbol", "Type", "Volume", "Price", "S/L", "T/P", "Time", "Price", "Commission", "Swap", "Profit"],
+      ["Orders"],
+      ["Deals"],
+      ["Time", "Deal", "Symbol", "Type", "Direction", "Volume", "Price", "Order", "Commission", "Fee", "Swap", "Profit", "Balance", "Comment"],
+      ["2026.05.01 00:00:00", "5001", "", "balance", "", "", "", "", "", "", "", "100", "100", "CD-EC-UPI deposit"],
+      ["2026.05.02 00:00:00", "5002", "GOLD", "buy", "in", "0.1", "100", "9", "0", "0", "0", "5", "105", ""], // not a balance op
+      ["Balance:", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+      ["2026.05.03 00:00:00", "9999", "", "balance", "", "", "", "", "", "", "", "999", "999", "after Balance: — ignored"],
+    ];
+    const { balanceOps } = parseWorkbookRows(rows);
+    expect(balanceOps).toHaveLength(1);
+    expect(balanceOps[0]).toMatchObject({ dealId: "5001", profit: 100, balance: 100, comment: "CD-EC-UPI deposit" });
+  });
+});
+
+describe("summarizePrior (beginner-era archive)", () => {
+  const p = (profit, openTime) => ({ profit, openTime: iso(...openTime) });
+  it("summarizes prior trades and capital flows (transfers excluded)", () => {
+    const positions = [p(10, [2026, 1, 1, 10, 0]), p(-4, [2026, 1, 3, 10, 0]), p(0, [2026, 1, 2, 10, 0])];
+    const ops = [
+      { profit: 100, comment: "deposit" },
+      { profit: -20, comment: "withdrawal" },
+      { profit: -30, comment: "transfer to acc2" }, // excluded from deposits/withdrawals
+    ];
+    const s = summarizePrior(positions, ops);
+    expect(s).toMatchObject({ trades: 3, net: 6, winRate: 33.3, deposits: 100, withdrawals: -20, ops: 3 });
+    expect(s.firstDate).toBe(iso(2026, 1, 1, 10, 0));
+    expect(s.lastDate).toBe(iso(2026, 1, 3, 10, 0));
+  });
+  it("returns null when there is nothing prior", () => {
+    expect(summarizePrior([], [])).toBe(null);
+  });
+});
+
+describe("computeAnalytics — edge cases", () => {
+  it("returns profitFactor null when there are no losses", () => {
+    const a = computeAnalytics([
+      trade(1, [2026, 6, 1, 10, 0], [2026, 6, 1, 10, 5], 10),
+      trade(2, [2026, 6, 1, 11, 0], [2026, 6, 1, 11, 5], 20),
+    ], []);
+    expect(a.grossLoss).toBe(0);
+    expect(a.profitFactor).toBe(null);
+  });
+  it("treats a breakeven trade as neither win nor loss and resets streaks", () => {
+    const a = computeAnalytics([
+      trade(1, [2026, 6, 1, 10, 0], [2026, 6, 1, 10, 5], -5),
+      trade(2, [2026, 6, 1, 11, 0], [2026, 6, 1, 11, 5], 0),
+      trade(3, [2026, 6, 1, 12, 0], [2026, 6, 1, 12, 5], 10),
+    ], []);
+    expect(a.winRate).toBe(33.3); // 1 win of 3 (breakeven is not a win)
+    expect(a.longestWinStreak).toBe(1);
+    expect(a.longestLossStreak).toBe(1);
+    expect(a.currentStreak).toEqual({ dir: "win", len: 1 });
+  });
+  it("leaves currentBalance and roiPct null without balance ops", () => {
+    const a = computeAnalytics([trade(1, [2026, 6, 1, 10, 0], [2026, 6, 1, 10, 5], 10)], []);
+    expect(a.currentBalance).toBe(null);
+    expect(a.roiPct).toBe(null);
+  });
+  it("flags lot escalation when volume grows mid tilt-streak", () => {
+    const a = computeAnalytics([
+      trade(1, [2026, 6, 1, 10, 0], [2026, 6, 1, 10, 1], -5, { volume: 0.1 }),
+      trade(2, [2026, 6, 1, 10, 2], [2026, 6, 1, 10, 3], -5, { volume: 0.2 }),
+      trade(3, [2026, 6, 1, 10, 4], [2026, 6, 1, 10, 5], -5, { volume: 0.3 }),
+    ], []);
+    expect(a.tiltClusters).toHaveLength(1);
+    expect(a.tiltClusters[0]).toMatchObject({ count: 3, lotEscalation: true });
   });
 });
