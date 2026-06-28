@@ -10,7 +10,7 @@ import {
   ArrowUpDown, Filter,
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { storage } from "./lib/storage";
+import { storage, estimateUsageBytes } from "./lib/storage";
 import { parseCandleCSV, inferSymbolTimeframe, mergeCandles, candleStorageKey } from "./lib/candleParser";
 import { computeTradeVerdicts, precomputeSmcState } from "./lib/smc";
 
@@ -110,6 +110,7 @@ function parseWorkbookRows(rows) {
   const idxDeals = rows.findIndex((r) => r[0] === "Deals");
 
   const positions = [];
+  let skipped = 0; // rows that looked like trades (had a ticket) but had unreadable dates
   if (idxPositions !== -1) {
     const dataStart = idxPositions + 2;
     const dataEnd = idxOrders !== -1 ? idxOrders : rows.length;
@@ -118,7 +119,7 @@ function parseWorkbookRows(rows) {
       if (!r || r[1] == null) continue;
       const openTime = parseMT5DateTime(r[0]);
       const closeTime = parseMT5DateTime(r[8]);
-      if (!openTime || !closeTime) continue;
+      if (!openTime || !closeTime) { skipped++; continue; }
       positions.push({
         ticket: String(r[1]),
         openTime: openTime.toISOString(),
@@ -165,7 +166,7 @@ function parseWorkbookRows(rows) {
     if (r[0] === "Account:") meta.account = r[3];
     if (r[0] === "Company:") meta.company = r[3];
   }
-  return { positions, balanceOps, meta };
+  return { positions, balanceOps, meta, skipped };
 }
 
 function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTINGS) {
@@ -430,7 +431,7 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     const pv = pvBySymbol[t.symbol];
     if (t.sl == null || t.openPrice == null || !t.volume || !pv) return null;
     const risk = Math.abs(t.openPrice - t.sl) * t.volume * pv;
-    return risk > 0 ? risk : null;
+    return Number.isFinite(risk) && risk > 0 ? risk : null;
   };
   const tradesList = pos
     .map((t) => {
@@ -456,7 +457,7 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     netProfit: round2(netProfit),
     grossProfit: round2(grossProfit),
     grossLoss: round2(grossLoss),
-    profitFactor: grossLoss !== 0 ? round2(Math.abs(grossProfit / grossLoss)) : null,
+    profitFactor: grossLoss !== 0 && Number.isFinite(grossProfit / grossLoss) ? round2(Math.abs(grossProfit / grossLoss)) : null,
     largestWin: pos.length ? round2(Math.max(...pos.map((p) => p.profit))) : 0,
     largestLoss: pos.length ? round2(Math.min(...pos.map((p) => p.profit))) : 0,
     currentBalance: currentBalance != null ? round2(currentBalance) : null,
@@ -755,6 +756,17 @@ function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
             <button onClick={onExport} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Download size={14} /> Export JSON</button>
             <button onClick={onImportClick} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Upload size={14} /> Import JSON</button>
           </div>
+          {(() => {
+            const mb = estimateUsageBytes() / (1024 * 1024);
+            // Browsers cap localStorage near 5 MB; warn as the journal + candles approach it.
+            const tone = mb >= 4.5 ? C.rose : mb >= 3.5 ? C.amber : C.textFaint;
+            return (
+              <div className="text-xs mt-2" style={{ color: tone }}>
+                Storage in use: ~{mb.toFixed(2)} MB of ~5 MB.
+                {mb >= 3.5 && " Approaching the browser limit — export a backup and consider resetting candle data."}
+              </div>
+            );
+          })()}
         </div>
 
         <div className="flex items-center justify-between mt-5">
@@ -777,6 +789,7 @@ export default function TradingJournal() {
   const [initializing, setInitializing] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [uploadError, setUploadError] = useState(null);
+  const [uploadNotice, setUploadNotice] = useState(null); // informational (e.g. "N rows skipped")
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -823,10 +836,12 @@ export default function TradingJournal() {
     }
     setProcessing(true);
     setUploadError(null);
+    setUploadNotice(null);
     const posMap = new Map(positions.map((p) => [p.ticket, p]));
     const balMap = new Map(balanceOps.map((b) => [b.dealId, b]));
     let newMeta = accountMeta;
     const failed = [];
+    let totalSkipped = 0;
     for (const file of files) {
       try {
         const buf = await file.arrayBuffer();
@@ -838,6 +853,7 @@ export default function TradingJournal() {
         parsed.positions.forEach((p) => posMap.set(p.ticket, p));
         parsed.balanceOps.forEach((b) => balMap.set(b.dealId, b));
         if (parsed.meta && parsed.meta.account) newMeta = parsed.meta;
+        totalSkipped += parsed.skipped || 0;
       } catch (err) {
         failed.push(file.name);
       }
@@ -849,14 +865,19 @@ export default function TradingJournal() {
     setBalanceOps(mergedBalanceOps);
     setAccountMeta(newMeta);
     setLastUpdated(now);
-    try {
-      storage.set("tj_positions", mergedPositions);
-      storage.set("tj_balance_ops", mergedBalanceOps);
-      if (newMeta) storage.set("tj_account_meta", newMeta);
+    // storage.set returns false on failure (e.g. quota exceeded) — collect the result
+    // so a full disk surfaces to the user instead of silently dropping their data.
+    const writeOk =
+      storage.set("tj_positions", mergedPositions) &&
+      storage.set("tj_balance_ops", mergedBalanceOps) &&
+      (!newMeta || storage.set("tj_account_meta", newMeta)) &&
       storage.set("tj_last_updated", now);
-    } catch (e) {}
     if (failed.length) {
       setUploadError(`Could not read: ${failed.join(", ")}. Make sure these are MT5 Trade History Report exports.`);
+    } else if (!writeOk) {
+      setUploadError("Storage is full — your latest upload may not be saved permanently. Export a JSON backup from Settings, then clear old candle data to free space.");
+    } else if (totalSkipped > 0) {
+      setUploadNotice(`Loaded ${mergedPositions.length} trades · ${totalSkipped} row${totalSkipped === 1 ? "" : "s"} skipped (unreadable date/format).`);
     }
     setProcessing(false);
   }
@@ -869,14 +890,18 @@ export default function TradingJournal() {
     }
     setProcessing(true);
     setUploadError(null);
+    setUploadNotice(null);
     const failed = [];
     const newIndex = { ...candleIndex };
+    let totalSkipped = 0;
+    let quotaHit = false;
 
     for (const file of files) {
       try {
         const text = await file.text();
-        const candles = parseCandleCSV(text);
+        const { candles, skipped } = parseCandleCSV(text);
         if (!candles.length) throw new Error("no candles parsed");
+        totalSkipped += skipped || 0;
 
         let { symbol, timeframe } = inferSymbolTimeframe(file.name);
         if (!symbol) symbol = window.prompt(`Symbol for "${file.name}"? (e.g. GOLD, BTCUSD)`);
@@ -891,7 +916,13 @@ export default function TradingJournal() {
         const key = candleStorageKey(symbol, timeframe);
         const existing = storage.get(key) || [];
         const merged = mergeCandles(existing, candles);
-        storage.set(key, merged);
+        // Candle datasets are the largest writes — a failure here is the most
+        // likely place to blow the localStorage quota, so check it explicitly.
+        if (!storage.set(key, merged)) {
+          quotaHit = true;
+          failed.push(`${file.name} (storage full)`);
+          continue;
+        }
 
         const indexKey = `${symbol}_${timeframe}`;
         newIndex[indexKey] = { symbol, timeframe, count: merged.length };
@@ -903,8 +934,12 @@ export default function TradingJournal() {
     setCandleIndex(newIndex);
     storage.set("tj_candle_index", newIndex);
 
-    if (failed.length) {
+    if (quotaHit) {
+      setUploadError("Storage is full — candle data couldn't be saved. Export a JSON backup from Settings, then reset or remove some candle data to free space. (localStorage caps around 5 MB.)");
+    } else if (failed.length) {
       setUploadError(`Could not read candles: ${failed.join(", ")}. Make sure these are MT5 CSV candle exports.`);
+    } else if (totalSkipped > 0) {
+      setUploadNotice(`Candles loaded · ${totalSkipped} malformed line${totalSkipped === 1 ? "" : "s"} skipped.`);
     }
     setProcessing(false);
   }
@@ -1342,6 +1377,7 @@ export default function TradingJournal() {
         )}
         {prior ? priorSection : dropzone}
         {uploadError && <div className="text-sm mt-3" style={{ color: C.rose }}>{uploadError}</div>}
+        {uploadNotice && <div className="text-sm mt-3" style={{ color: C.textMuted }}>{uploadNotice}</div>}
         {settingsModal}
       </div>
     );
@@ -1387,6 +1423,9 @@ export default function TradingJournal() {
 
       {uploadError && (
         <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.rose, background: C.roseDim }}>{uploadError}</div>
+      )}
+      {uploadNotice && (
+        <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.textMuted, background: C.panelAlt }}>{uploadNotice}</div>
       )}
       {processing && (
         <div className="text-sm mb-4" style={{ color: C.amber }}>Processing new upload…</div>

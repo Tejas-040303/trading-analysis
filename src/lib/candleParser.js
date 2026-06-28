@@ -9,23 +9,28 @@
 
 const cleanSymbol = (s) => String(s || "").replace("#", "").replace(".i", "").replace("_i", "");
 
+// Returns { candles, skipped } — `skipped` counts data lines that looked like
+// candle rows but were malformed (bad delimiter, unreadable date, non-numeric
+// OHLC), so the upload UI can tell the user how many rows were dropped. Header
+// lines are not counted as skipped.
 export function parseCandleCSV(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (!lines.length) return [];
+  if (!lines.length) return { candles: [], skipped: 0 };
 
   const candles = [];
+  let skipped = 0;
   for (const line of lines) {
     if (line.startsWith("<") || line.toLowerCase().startsWith("date")) continue;
 
     const parts = line.split("\t");
-    if (parts.length < 7) continue;
+    if (parts.length < 7) { skipped++; continue; }
 
     const [dateStr, timeStr, openStr, highStr, lowStr, closeStr, tickVolStr] = parts;
 
     const dm = dateStr.match(/^(\d{4})\.(\d{2})\.(\d{2})$/);
-    if (!dm) continue;
+    if (!dm) { skipped++; continue; }
     const tm = timeStr.match(/^(\d{2}):(\d{2}):(\d{2})$/);
-    if (!tm) continue;
+    if (!tm) { skipped++; continue; }
 
     const [y, mo, d] = dm.slice(1).map(Number);
     const [h, mi, s] = tm.slice(1).map(Number);
@@ -37,7 +42,7 @@ export function parseCandleCSV(text) {
     const close = parseFloat(closeStr);
     const tickVolume = parseInt(tickVolStr, 10) || 0;
 
-    if ([open, high, low, close].some(Number.isNaN)) continue;
+    if ([open, high, low, close].some(Number.isNaN)) { skipped++; continue; }
 
     candles.push({
       time: time.toISOString(),
@@ -49,7 +54,7 @@ export function parseCandleCSV(text) {
     });
   }
 
-  return candles;
+  return { candles, skipped };
 }
 
 export function inferSymbolTimeframe(filename) {
