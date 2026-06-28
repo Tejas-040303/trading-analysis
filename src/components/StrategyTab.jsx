@@ -105,15 +105,15 @@ export function StrategyTab({ candleIndex, hasCandleData, strategyImpact, setupS
 
               {setupScan.skipped.length > 0 && (
                 <div style={{ maxHeight: 300, overflow: "auto" }}>
-                  <table className="text-sm" style={{ minWidth: 560, width: "100%" }}>
+                  <table className="text-sm w-full min-w-0 sm:min-w-[560px]">
                     <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                       <tr style={{ color: C.textFaint }}>
-                        <th className="text-left pb-2 text-xs">When (skipped)</th>
-                        <th className="text-left pb-2 text-xs">Symbol</th>
-                        <th className="text-left pb-2 text-xs">Side</th>
-                        <th className="text-left pb-2 text-xs">Confluence</th>
-                        <th className="text-right pb-2 text-xs">Hyp. reach</th>
-                        <th className="text-right pb-2 text-xs">Hyp. adverse</th>
+                        <th scope="col" className="text-left pb-2 text-xs">When (skipped)</th>
+                        <th scope="col" className="text-left pb-2 text-xs">Symbol</th>
+                        <th scope="col" className="text-left pb-2 text-xs">Side</th>
+                        <th scope="col" className="text-left pb-2 text-xs hidden sm:table-cell">Confluence</th>
+                        <th scope="col" className="text-right pb-2 text-xs">Hyp. reach</th>
+                        <th scope="col" className="text-right pb-2 text-xs hidden sm:table-cell">Hyp. adverse</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -122,9 +122,9 @@ export function StrategyTab({ candleIndex, hasCandleData, strategyImpact, setupS
                           <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(s.time)}</td>
                           <td className="py-1.5" style={{ color: C.text }}>{s.symbol}</td>
                           <td className="py-1.5" style={{ color: s.side === "buy" ? C.emerald : C.rose }}>{s.side}</td>
-                          <td className="py-1.5 text-xs" style={{ color: C.textMuted }}>{s.score}/4 · {s.hits.join(", ")}</td>
+                          <td className="py-1.5 text-xs hidden sm:table-cell" style={{ color: C.textMuted }}>{s.score}/4 · {s.hits.join(", ")}</td>
                           <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.amber }}>{s.mfeR != null ? `${s.mfeR.toFixed(2)}R` : "—"}</td>
-                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textFaint }}>{s.maeR != null ? `${s.maeR.toFixed(2)}R` : "—"}</td>
+                          <td className="py-1.5 text-right hidden sm:table-cell" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textFaint }}>{s.maeR != null ? `${s.maeR.toFixed(2)}R` : "—"}</td>
                         </tr>
                       ))}
                     </tbody>

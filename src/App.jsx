@@ -709,25 +709,54 @@ export default function TradingJournal() {
     { id: "strategy", label: "Strategy" },
   ];
 
+  // Arrow-key navigation for the tablist (WAI-ARIA tabs pattern): Left/Right
+  // cycle, Home/End jump to ends, moving both selection and DOM focus.
+  const onTabKeyDown = (e) => {
+    const deltas = { ArrowRight: 1, ArrowLeft: -1, Home: "first", End: "last" };
+    if (!(e.key in deltas)) return;
+    e.preventDefault();
+    const i = TABS.findIndex((t) => t.id === activeTab);
+    const next =
+      e.key === "Home" ? 0 :
+      e.key === "End" ? TABS.length - 1 :
+      (i + deltas[e.key] + TABS.length) % TABS.length;
+    setActiveTab(TABS[next].id);
+    e.currentTarget.querySelectorAll('[role="tab"]')[next]?.focus();
+  };
+
   const tabBar = (
-    <div className="flex gap-1 mb-6 rounded-lg p-1" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
-      {TABS.map((tab) => (
-        <button
-          key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
-          className="flex-1 text-sm py-2 rounded-md"
-          style={{
-            background: activeTab === tab.id ? C.panelAlt : "transparent",
-            color: activeTab === tab.id ? C.text : C.textMuted,
-            border: activeTab === tab.id ? `0.5px solid ${C.border}` : "0.5px solid transparent",
-            fontWeight: activeTab === tab.id ? 600 : 400,
-            fontFamily: "'Space Grotesk', sans-serif",
-            cursor: "pointer",
-          }}
-        >
-          {tab.label}
-        </button>
-      ))}
+    <div
+      role="tablist"
+      aria-label="Journal views"
+      onKeyDown={onTabKeyDown}
+      className="flex gap-1 mb-6 rounded-lg p-1"
+      style={{ background: C.panel, border: `0.5px solid ${C.border}` }}
+    >
+      {TABS.map((tab) => {
+        const selected = activeTab === tab.id;
+        return (
+          <button
+            key={tab.id}
+            id={`tab-${tab.id}`}
+            role="tab"
+            aria-selected={selected}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => setActiveTab(tab.id)}
+            className="flex-1 text-sm py-2 rounded-md"
+            style={{
+              background: selected ? C.panelAlt : "transparent",
+              color: selected ? C.text : C.textMuted,
+              border: selected ? `0.5px solid ${C.border}` : "0.5px solid transparent",
+              fontWeight: selected ? 600 : 400,
+              fontFamily: "'Space Grotesk', sans-serif",
+              cursor: "pointer",
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
     </div>
   );
 
@@ -753,48 +782,54 @@ export default function TradingJournal() {
 
       {/* ── Dashboard tab ──────────────────────────────────────────── */}
       {activeTab === "dashboard" && (
-        <DashboardTab
-          a={a}
-          settings={settings}
-          filteredDaily={filteredDaily}
-          chartRange={chartRange}
-          setChartRange={setChartRange}
-          setRange={setRange}
-          priorSection={priorSection}
-        />
+        <div role="tabpanel" id="panel-dashboard" aria-labelledby="tab-dashboard">
+          <DashboardTab
+            a={a}
+            settings={settings}
+            filteredDaily={filteredDaily}
+            chartRange={chartRange}
+            setChartRange={setChartRange}
+            setRange={setRange}
+            priorSection={priorSection}
+          />
+        </div>
       )}
 
       {/* ── Trades tab ─────────────────────────────────────────────── */}
       {activeTab === "trades" && (
-        <TradesTab
-          a={a}
-          settings={settings}
-          sortedDaily={sortedDaily}
-          dailySort={dailySort}
-          toggleDailySort={toggleDailySort}
-          sortedTrades={sortedTrades}
-          tradeSort={tradeSort}
-          toggleSort={toggleSort}
-          tradeFilter={tradeFilter}
-          setTradeFilter={setTradeFilter}
-          allTags={allTags}
-          hasCandleData={hasCandleData}
-          tradeVerdicts={tradeVerdicts}
-          expandedTrade={expandedTrade}
-          setExpandedTrade={setExpandedTrade}
-          saveNote={saveNote}
-        />
+        <div role="tabpanel" id="panel-trades" aria-labelledby="tab-trades">
+          <TradesTab
+            a={a}
+            settings={settings}
+            sortedDaily={sortedDaily}
+            dailySort={dailySort}
+            toggleDailySort={toggleDailySort}
+            sortedTrades={sortedTrades}
+            tradeSort={tradeSort}
+            toggleSort={toggleSort}
+            tradeFilter={tradeFilter}
+            setTradeFilter={setTradeFilter}
+            allTags={allTags}
+            hasCandleData={hasCandleData}
+            tradeVerdicts={tradeVerdicts}
+            expandedTrade={expandedTrade}
+            setExpandedTrade={setExpandedTrade}
+            saveNote={saveNote}
+          />
+        </div>
       )}
 
       {/* ── Strategy tab ───────────────────────────────────────────── */}
       {activeTab === "strategy" && (
-        <StrategyTab
-          candleIndex={candleIndex}
-          hasCandleData={hasCandleData}
-          strategyImpact={strategyImpact}
-          setupScan={setupScan}
-          settings={settings}
-        />
+        <div role="tabpanel" id="panel-strategy" aria-labelledby="tab-strategy">
+          <StrategyTab
+            candleIndex={candleIndex}
+            hasCandleData={hasCandleData}
+            strategyImpact={strategyImpact}
+            setupScan={setupScan}
+            settings={settings}
+          />
+        </div>
       )}
 
       {settingsModal}

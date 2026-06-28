@@ -12,8 +12,10 @@ import { BalanceTotal } from "./BalanceTotal";
 import { ChartCard } from "./ChartCard";
 import { CalendarHeatmap } from "./CalendarHeatmap";
 import { TimeOfDayHeatmap } from "./TimeOfDayHeatmap";
+import { useReducedMotion } from "../lib/useReducedMotion";
 
 export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartRange, setRange, priorSection }) {
+  const reducedMotion = useReducedMotion();
   return (
     <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -87,7 +89,7 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                 <YAxis yAxisId="left" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
                 <YAxis yAxisId="right" orientation="right" {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={50} />
                 <Tooltip {...tooltipStyle} formatter={(v, name) => [fmtMoney(v), name]} labelFormatter={(l, payload) => { const d = payload?.[0]?.payload; return d ? `${l} · ${d.trades} trades · ${d.winRate}% win` : l; }} />
-                <Bar yAxisId="left" dataKey="profit" name="Daily P/L" radius={[3, 3, 0, 0]}>
+                <Bar yAxisId="left" dataKey="profit" name="Daily P/L" radius={[3, 3, 0, 0]} isAnimationActive={!reducedMotion}>
                   {filteredDaily.map((d, i) => (
                     <Cell
                       key={i}
@@ -97,8 +99,8 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                     />
                   ))}
                 </Bar>
-                <Line yAxisId="right" type="monotone" dataKey="cumProfit" name="Cumulative" stroke={C.amber} strokeWidth={2} dot={{ r: 2, fill: C.amber }} />
-                <Line yAxisId="right" type="monotone" dataKey="cumDisciplined" name="If 3min+ only" stroke={C.emerald} strokeWidth={2} strokeDasharray="4 3" dot={false} />
+                <Line yAxisId="right" type="monotone" dataKey="cumProfit" name="Cumulative" stroke={C.amber} strokeWidth={2} dot={{ r: 2, fill: C.amber }} isAnimationActive={!reducedMotion} />
+                <Line yAxisId="right" type="monotone" dataKey="cumDisciplined" name="If 3min+ only" stroke={C.emerald} strokeWidth={2} strokeDasharray="4 3" dot={false} isAnimationActive={!reducedMotion} />
               </ComposedChart>
             </ChartCard>
             <div className="text-xs mt-2" style={{ color: C.textFaint }}>
@@ -113,7 +115,7 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                 <XAxis dataKey="label" {...axisProps} />
                 <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
                 <Tooltip {...tooltipStyle} formatter={(v, name, p) => [name === "netPl" ? fmtMoney(v) : v, name === "netPl" ? "Net P/L" : name]} labelFormatter={(l, p) => `${l} hold · ${p?.[0]?.payload?.n ?? ""} trades · ${p?.[0]?.payload?.winRate ?? ""}% win`} />
-                <Bar dataKey="netPl" radius={[3, 3, 0, 0]}>
+                <Bar dataKey="netPl" radius={[3, 3, 0, 0]} isAnimationActive={!reducedMotion}>
                   {a.durationBuckets.map((d, i) => (
                     <Cell key={i} fill={d.netPl >= 0 ? C.emerald : C.rose} />
                   ))}
@@ -126,7 +128,7 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                 <XAxis dataKey="day" {...axisProps} />
                 <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
                 <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades`} />
-                <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
+                <Bar dataKey="profit" radius={[3, 3, 0, 0]} isAnimationActive={!reducedMotion}>
                   {a.dowStats.map((d, i) => (
                     <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
                   ))}
@@ -143,7 +145,7 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                   <XAxis dataKey="session" {...axisProps} />
                   <YAxis {...axisProps} tickFormatter={(v) => (v < 0 ? "-$" : "$") + Math.abs(v)} width={46} />
                   <Tooltip {...tooltipStyle} formatter={(v) => fmtMoney(v)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.trades ?? 0} trades · ${p?.[0]?.payload?.winRate ?? 0}% win`} />
-                  <Bar dataKey="profit" radius={[3, 3, 0, 0]}>
+                  <Bar dataKey="profit" radius={[3, 3, 0, 0]} isAnimationActive={!reducedMotion}>
                     {a.sessionStats.map((d, i) => (
                       <Cell key={i} fill={d.profit >= 0 ? C.emerald : C.rose} />
                     ))}
@@ -212,11 +214,11 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                 <table className="w-full text-sm">
                   <thead style={{ position: "sticky", top: 0, background: C.panel }}>
                     <tr style={{ color: C.textFaint }}>
-                      <th className="text-left pb-2 text-xs">Date</th>
-                      <th className="text-left pb-2 text-xs">Type</th>
-                      <th className="text-right pb-2 text-xs">Amount</th>
-                      <th className="text-right pb-2 text-xs">Balance after</th>
-                      <th className="text-left pb-2 text-xs pl-3">Comment</th>
+                      <th scope="col" className="text-left pb-2 text-xs">Date</th>
+                      <th scope="col" className="text-left pb-2 text-xs">Type</th>
+                      <th scope="col" className="text-right pb-2 text-xs">Amount</th>
+                      <th scope="col" className="text-right pb-2 text-xs hidden sm:table-cell">Balance after</th>
+                      <th scope="col" className="text-left pb-2 text-xs pl-3 hidden sm:table-cell">Comment</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -229,8 +231,8 @@ export function DashboardTab({ a, settings, filteredDaily, chartRange, setChartR
                             <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: meta.color, background: meta.bg, whiteSpace: "nowrap" }}>{meta.label}</span>
                           </td>
                           <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: op.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(op.profit)}</td>
-                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{op.balance != null ? fmtMoney(op.balance) : "—"}</td>
-                          <td className="py-1.5 pl-3 text-xs" style={{ color: C.textFaint, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.comment}>{op.comment || "—"}</td>
+                          <td className="py-1.5 text-right hidden sm:table-cell" style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{op.balance != null ? fmtMoney(op.balance) : "—"}</td>
+                          <td className="py-1.5 pl-3 text-xs hidden sm:table-cell" style={{ color: C.textFaint, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.comment}>{op.comment || "—"}</td>
                         </tr>
                       );
                     })}
