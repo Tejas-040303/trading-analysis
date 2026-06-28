@@ -48,10 +48,10 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                 <table className="text-sm" style={{ minWidth: 280, width: "100%" }}>
                   <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                     <tr style={{ color: C.textFaint }}>
-                      <th className="text-left pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Symbol</th>
-                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>N</th>
-                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Win%</th>
-                      <th className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>P/L</th>
+                      <th scope="col" className="text-left pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Symbol</th>
+                      <th scope="col" className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>N</th>
+                      <th scope="col" className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>Win%</th>
+                      <th scope="col" className="text-right pb-2 text-xs" style={{ resize: "horizontal", overflow: "hidden" }}>P/L</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -83,9 +83,13 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                       ].map((h) => (
                         <th
                           key={h.col}
+                          scope="col"
+                          aria-sort={dailySort.col === h.col ? (dailySort.dir === "asc" ? "ascending" : "descending") : "none"}
+                          tabIndex={0}
                           className={`${h.align} pb-2 text-xs`}
                           style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", resize: "horizontal", overflow: "hidden" }}
                           onClick={() => toggleDailySort(h.col)}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDailySort(h.col); } }}
                         >
                           {h.label} {dailySort.col === h.col ? (dailySort.dir === "asc" ? "↑" : "↓") : ""}
                         </th>
@@ -191,7 +195,7 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
               )}
             </div>
             <div style={{ maxHeight: 460, overflow: "auto" }}>
-              <table className="text-sm" style={{ minWidth: hasCandleData ? 980 : 750, width: "100%" }}>
+              <table className={`text-sm w-full min-w-0 ${hasCandleData ? "sm:min-w-[980px]" : "sm:min-w-[750px]"}`}>
                 <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                   <tr style={{ color: C.textFaint }}>
                     {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
@@ -199,21 +203,30 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                       { col: "openTime", label: "When", align: "text-left" },
                       { col: "symbol", label: "Symbol", align: "text-left" },
                       { col: "type", label: "Side", align: "text-left" },
-                      { col: "durationMin", label: "Hold", align: "text-right" },
+                      { col: "durationMin", label: "Hold", align: "text-right", hideMobile: true },
                       { col: "profit", label: "P/L", align: "text-right" },
-                      { col: "r", label: "R", align: "text-right" },
+                      { col: "r", label: "R", align: "text-right", hideMobile: true },
                     ].map((h) => (
-                      <th key={h.col} className={`${h.align} pb-2 text-xs`} style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort(h.col)}>
+                      <th
+                        key={h.col}
+                        scope="col"
+                        aria-sort={tradeSort.col === h.col ? (tradeSort.dir === "asc" ? "ascending" : "descending") : "none"}
+                        tabIndex={0}
+                        className={`${h.align} pb-2 text-xs ${h.hideMobile ? "hidden sm:table-cell" : ""}`}
+                        style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", resize: "horizontal", overflow: "hidden" }}
+                        onClick={() => toggleSort(h.col)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSort(h.col); } }}
+                      >
                         {h.label} {tradeSort.col === h.col ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     ))}
                     {hasCandleData && (
-                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("structure")}>
+                      <th scope="col" aria-sort={tradeSort.col === "structure" ? (tradeSort.dir === "asc" ? "ascending" : "descending") : "none"} tabIndex={0} className="text-center pb-2 text-xs hidden sm:table-cell" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("structure")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSort("structure"); } }}>
                         Structure {tradeSort.col === "structure" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     )}
                     {hasCandleData && (
-                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("confluence")} title="How many setup strategies (S1–S5) aligned at entry">
+                      <th scope="col" aria-sort={tradeSort.col === "confluence" ? (tradeSort.dir === "asc" ? "ascending" : "descending") : "none"} tabIndex={0} className="text-center pb-2 text-xs hidden sm:table-cell" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("confluence")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSort("confluence"); } }} title="How many setup strategies (S1–S5) aligned at entry">
                         Conv. {tradeSort.col === "confluence" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     )}
@@ -246,7 +259,10 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                       <React.Fragment key={t.ticket}>
                         <tr
                           style={{ borderTop: `0.5px solid ${C.borderSoft}`, cursor: hasCandleData ? "pointer" : undefined }}
+                          tabIndex={hasCandleData ? 0 : undefined}
+                          aria-expanded={hasCandleData ? isExpanded : undefined}
                           onClick={() => hasCandleData && setExpandedTrade(isExpanded ? null : t.ticket)}
+                          onKeyDown={hasCandleData ? (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); setExpandedTrade(isExpanded ? null : t.ticket); } } : undefined}
                         >
                           {hasCandleData && (
                             <td className="py-1.5" style={{ color: C.textFaint, width: 20 }}>
@@ -256,11 +272,11 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                           <td className="py-1.5" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTimeShort(t.openTime)}</td>
                           <td className="py-1.5" style={{ color: C.text }}>{t.symbol}</td>
                           <td className="py-1.5" style={{ color: t.type === "buy" ? C.emerald : C.rose }}>{t.type}</td>
-                          <td className="py-1.5 text-right" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
+                          <td className="py-1.5 text-right hidden sm:table-cell" style={{ color: C.textMuted, whiteSpace: "nowrap" }}>{t.durationMin < 1 ? "<1m" : `${Math.round(t.durationMin)}m`}</td>
                           <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.profit >= 0 ? C.emerald : C.rose }}>{fmtMoney(t.profit)}</td>
-                          <td className="py-1.5 text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
+                          <td className="py-1.5 text-right hidden sm:table-cell" style={{ fontFamily: "'JetBrains Mono', monospace", color: t.r == null ? C.textFaint : t.r >= 0 ? C.emerald : C.rose }}>{t.r == null ? "—" : `${t.r >= 0 ? "+" : ""}${t.r}R`}</td>
                           {hasCandleData && (
-                            <td className="py-1.5 text-center">
+                            <td className="py-1.5 text-center hidden sm:table-cell">
                               <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1Bg }}>{s1Label}</span>
                             </td>
                           )}
@@ -270,7 +286,7 @@ export function TradesTab({ a, settings, sortedDaily, dailySort, toggleDailySort
                             const cColor = score >= 3 ? C.emerald : score >= 1 ? C.amber : C.textFaint;
                             const cBg = score >= 3 ? C.emeraldDim : score >= 1 ? C.amberDim : "transparent";
                             return (
-                              <td className="py-1.5 text-center">
+                              <td className="py-1.5 text-center hidden sm:table-cell">
                                 <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: cColor, background: cBg, fontFamily: "'JetBrains Mono', monospace" }} title={conf && conf.hits.length ? conf.hits.join(", ") : "no strategies aligned"}>
                                   {score}/{CONFLUENCE_MAX}
                                 </span>

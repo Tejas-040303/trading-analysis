@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Download, Upload, X } from "lucide-react";
 import { C } from "../theme";
 import { DEFAULT_SETTINGS } from "../lib/analytics";
@@ -7,6 +7,30 @@ import { estimateUsageBytes } from "../lib/storage";
 export function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
   const [draft, setDraft] = useState(settings);
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  const dialogRef = useRef(null);
+
+  // Modal a11y: focus the dialog on open, trap Tab within it, close on Escape,
+  // and restore focus to the triggering control when it unmounts.
+  useEffect(() => {
+    const prevActive = document.activeElement;
+    dialogRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+      if (e.key !== "Tab" || !dialogRef.current) return;
+      const f = dialogRef.current.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (prevActive instanceof HTMLElement) prevActive.focus();
+    };
+  }, [onClose]);
   const fieldStyle = {
     background: C.panelAlt,
     border: `0.5px solid ${C.border}`,
@@ -62,13 +86,18 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
       style={{ position: "fixed", inset: 0, background: "rgba(2,4,8,0.7)", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, overflowY: "auto" }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         className="rounded-2xl"
         style={{ background: C.panel, border: `0.5px solid ${C.border}`, width: "100%", maxWidth: 460, marginTop: 32, marginBottom: 32, padding: 20 }}
       >
         <div className="flex items-center justify-between mb-4">
-          <span style={{ color: C.text, fontWeight: 600, fontSize: 17, fontFamily: "'Space Grotesk', sans-serif" }}>Settings</span>
-          <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textMuted, cursor: "pointer" }} title="Close"><X size={18} /></button>
+          <span id="settings-title" style={{ color: C.text, fontWeight: 600, fontSize: 17, fontFamily: "'Space Grotesk', sans-serif" }}>Settings</span>
+          <button onClick={onClose} aria-label="Close settings" style={{ background: "transparent", border: "none", color: C.textMuted, cursor: "pointer" }} title="Close"><X size={18} /></button>
         </div>
 
         <div className="mb-4">
