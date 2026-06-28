@@ -781,6 +781,30 @@ function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
   );
 }
 
+// Confluence score: how many setup strategies "fired" supportively at entry.
+// S6 (session) is context, not a setup signal, so it's excluded — max score 5.
+// The "supportive" verdict per strategy is a judgment call, surfaced in UI copy.
+const CONFLUENCE_RULES = [
+  { key: "s1", id: "S1", ok: (s) => s.verdict === "aligned" },
+  { key: "s2", id: "S2", ok: (s) => s.verdict === "at-ob" },
+  { key: "s3", id: "S3", ok: (s) => s.verdict === "at-fvg" },
+  { key: "s4", id: "S4", ok: (s) => s.verdict === "swept" },
+  { key: "s5", id: "S5", ok: (s) => s.verdict === "at-poc" || s.verdict === "in-va" },
+];
+const CONFLUENCE_MAX = CONFLUENCE_RULES.length;
+
+function confluenceOf(verdict) {
+  const hits = [];
+  let scored = 0; // how many strategies had a usable (non-null) verdict
+  for (const r of CONFLUENCE_RULES) {
+    const s = verdict[r.key];
+    if (!s || s.verdict === "insufficient" || s.verdict == null) continue;
+    scored++;
+    if (r.ok(s)) hits.push(r.id);
+  }
+  return { score: hits.length, hits, scored };
+}
+
 export default function TradingJournal() {
   const [positions, setPositions] = useState([]);
   const [balanceOps, setBalanceOps] = useState([]);
@@ -799,7 +823,7 @@ export default function TradingJournal() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
   const [tradeSort, setTradeSort] = useState({ col: "openTime", dir: "desc" });
-  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "" });
+  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "", minConfluence: "" });
   const [dailySort, setDailySort] = useState({ col: "date", dir: "desc" });
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
@@ -1061,10 +1085,12 @@ export default function TradingJournal() {
     for (const t of analytics.tradesList) {
       const candles = loadCandles(t.symbol);
       const smc = getSmcState(t.symbol);
-      verdicts[t.ticket] = computeTradeVerdicts(candles, t, {
+      const v = computeTradeVerdicts(candles, t, {
         swingLookback: settings.swingLookback || 5,
         brokerGmtOffsetHours: settings.brokerGmtOffsetHours,
       }, smc);
+      v.confluence = confluenceOf(v);
+      verdicts[t.ticket] = v;
     }
     return verdicts;
   }, [analytics, candleIndex, settings.swingLookback, settings.brokerGmtOffsetHours]);
@@ -1103,6 +1129,13 @@ export default function TradingJournal() {
         return true;
       });
     }
+    if (tradeFilter.minConfluence && hasCandleData) {
+      const min = Number(tradeFilter.minConfluence);
+      list = list.filter((t) => {
+        const v = tradeVerdicts[t.ticket];
+        return v && v.confluence && v.confluence.score >= min;
+      });
+    }
     // Sort
     const dir = tradeSort.dir === "asc" ? 1 : -1;
     list.sort((a, b) => {
@@ -1117,6 +1150,10 @@ export default function TradingJournal() {
         case "structure": {
           const sv = (t) => { const v = tradeVerdicts[t.ticket]; return v && v.s1 ? v.s1.verdict : ""; };
           va = sv(a); vb = sv(b); break;
+        }
+        case "confluence": {
+          const cv = (t) => { const v = tradeVerdicts[t.ticket]; return v && v.confluence ? v.confluence.score : -1; };
+          va = cv(a); vb = cv(b); break;
         }
         default: va = a.openTime; vb = b.openTime;
       }
@@ -1136,6 +1173,9 @@ export default function TradingJournal() {
     const s4 = { swept: [], noSweep: [], noData: [] };
     const s5 = { atPoc: [], inVa: [], outsideVa: [], noData: [] };
     const s6 = {};
+    const confByScore = {}; // confluence score (0–5) -> trades[]
+    const confHigh = [];    // score >= 3
+    const confLow = [];     // score <= 1
     for (const t of analytics.tradesList) {
       const v = tradeVerdicts[t.ticket];
       // S1
@@ -1172,11 +1212,20 @@ export default function TradingJournal() {
         if (!s6[v.s6.session]) s6[v.s6.session] = [];
         s6[v.s6.session].push(t);
       }
+      // Confluence — only trades that had usable candle data (scored > 0)
+      if (v && v.confluence && v.confluence.scored > 0) {
+        const sc = v.confluence.score;
+        (confByScore[sc] = confByScore[sc] || []).push(t);
+        if (sc >= 3) confHigh.push(t);
+        else if (sc <= 1) confLow.push(t);
+      }
     }
     const stats = (arr) => {
       const w = arr.filter((t) => t.profit > 0).length;
       return { n: arr.length, pl: round2(arr.reduce((s, t) => s + t.profit, 0)), winRate: arr.length ? round1((w / arr.length) * 100) : 0 };
     };
+    const byScore = {};
+    for (let sc = 0; sc <= CONFLUENCE_MAX; sc++) byScore[sc] = stats(confByScore[sc] || []);
     return {
       s1: { aligned: stats(s1.aligned), counter: stats(s1.counter), noStructure: stats(s1.noStructure), insufficient: stats(s1.insufficient), noCandles: stats(s1.noCandles) },
       s2: { atOB: stats(s2.atOB), nearOB: stats(s2.nearOB), noOB: stats(s2.noOB), noData: stats(s2.noData) },
@@ -1184,6 +1233,7 @@ export default function TradingJournal() {
       s4: { swept: stats(s4.swept), noSweep: stats(s4.noSweep), noData: stats(s4.noData) },
       s5: { atPoc: stats(s5.atPoc), inVa: stats(s5.inVa), outsideVa: stats(s5.outsideVa), noData: stats(s5.noData) },
       s6: Object.fromEntries(Object.entries(s6).map(([k, v]) => [k, stats(v)])),
+      confluence: { byScore, high: stats(confHigh), low: stats(confLow) },
     };
   }, [analytics, tradeVerdicts]);
 
@@ -1780,12 +1830,22 @@ export default function TradingJournal() {
                   <option value="none">No verdict</option>
                 </select>
               )}
-              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure) && (
-                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
+              {hasCandleData && (
+                <select value={tradeFilter.minConfluence} onChange={(e) => setTradeFilter((p) => ({ ...p, minConfluence: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                  <option value="">Any confluence</option>
+                  <option value="1">≥ 1 confluence</option>
+                  <option value="2">≥ 2 confluences</option>
+                  <option value="3">≥ 3 confluences</option>
+                  <option value="4">≥ 4 confluences</option>
+                  <option value="5">5 confluences</option>
+                </select>
+              )}
+              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure || tradeFilter.minConfluence) && (
+                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "", minConfluence: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
               )}
             </div>
             <div style={{ maxHeight: 460, overflow: "auto" }}>
-              <table className="text-sm" style={{ minWidth: hasCandleData ? 900 : 750, width: "100%" }}>
+              <table className="text-sm" style={{ minWidth: hasCandleData ? 980 : 750, width: "100%" }}>
                 <thead style={{ position: "sticky", top: 0, background: C.panel, zIndex: 1 }}>
                   <tr style={{ color: C.textFaint }}>
                     {hasCandleData && <th className="text-left pb-2 text-xs" style={{ width: 20 }}></th>}
@@ -1804,6 +1864,11 @@ export default function TradingJournal() {
                     {hasCandleData && (
                       <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("structure")}>
                         Structure {tradeSort.col === "structure" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
+                      </th>
+                    )}
+                    {hasCandleData && (
+                      <th className="text-center pb-2 text-xs" style={{ cursor: "pointer", userSelect: "none", resize: "horizontal", overflow: "hidden" }} onClick={() => toggleSort("confluence")} title="How many setup strategies (S1–S5) aligned at entry">
+                        Conv. {tradeSort.col === "confluence" ? (tradeSort.dir === "asc" ? "↑" : "↓") : ""}
                       </th>
                     )}
                     <th className="text-left pb-2 text-xs pl-3" style={{ minWidth: 140, resize: "horizontal", overflow: "hidden" }}>Note</th>
@@ -1853,12 +1918,34 @@ export default function TradingJournal() {
                               <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: s1Color, background: s1Bg }}>{s1Label}</span>
                             </td>
                           )}
+                          {hasCandleData && (() => {
+                            const conf = v && v.confluence;
+                            const score = conf ? conf.score : 0;
+                            const cColor = score >= 3 ? C.emerald : score >= 1 ? C.amber : C.textFaint;
+                            const cBg = score >= 3 ? C.emeraldDim : score >= 1 ? C.amberDim : "transparent";
+                            return (
+                              <td className="py-1.5 text-center">
+                                <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: cColor, background: cBg, fontFamily: "'JetBrains Mono', monospace" }} title={conf && conf.hits.length ? conf.hits.join(", ") : "no strategies aligned"}>
+                                  {score}/{CONFLUENCE_MAX}
+                                </span>
+                              </td>
+                            );
+                          })()}
                           <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
                         </tr>
                         {isExpanded && (
                           <tr>
-                            <td colSpan={hasCandleData ? 9 : 7} style={{ padding: 0 }}>
+                            <td colSpan={hasCandleData ? 10 : 7} style={{ padding: 0 }}>
                               <div className="px-4 py-3" style={{ background: C.panelAlt, borderLeft: `3px solid ${s1Color}` }}>
+                                {v && v.confluence && (
+                                  <div className="text-xs mb-2 pb-2" style={{ color: C.text, borderBottom: `0.5px solid ${C.border}` }}>
+                                    <span style={{ fontWeight: 500 }}>Confluence: </span>
+                                    <span style={{ fontFamily: "'JetBrains Mono', monospace", color: v.confluence.score >= 3 ? C.emerald : v.confluence.score >= 1 ? C.amber : C.textFaint }}>
+                                      {v.confluence.score}/{CONFLUENCE_MAX}
+                                    </span>
+                                    {v.confluence.hits.length > 0 && <span style={{ color: C.textFaint }}> · {v.confluence.hits.join(", ")}</span>}
+                                  </div>
+                                )}
                                 {s1 ? (
                                   <>
                                     <div className="text-xs mb-1" style={{ color: C.textMuted, fontWeight: 500 }}>S1 — Market Structure</div>
@@ -1963,6 +2050,48 @@ export default function TradingJournal() {
               </div>
             )}
           </div>
+
+          {/* Confluence breakdown — the headline payoff of all 6 strategies */}
+          {strategyImpact && hasCandleData && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.amberDim}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <Target size={15} style={{ color: C.amber }} />
+                <span className="text-sm" style={{ color: C.textMuted, fontWeight: 500 }}>Confluence — does stacking setups pay off?</span>
+              </div>
+              {(() => {
+                const hi = strategyImpact.confluence.high;
+                const lo = strategyImpact.confluence.low;
+                if (hi.n === 0 && lo.n === 0) return null;
+                return (
+                  <div className="text-sm mb-3 px-3 py-2 rounded-lg" style={{ background: C.panelAlt, color: C.text }}>
+                    Trades with <span style={{ color: C.emerald, fontWeight: 500 }}>≥3 confluences</span>: {hi.winRate}% win · <span style={{ fontFamily: "'JetBrains Mono', monospace", color: hi.pl >= 0 ? C.emerald : C.rose }}>{fmtMoney(hi.pl)}</span> over {hi.n} trades
+                    {"  vs  "}
+                    <span style={{ color: C.rose, fontWeight: 500 }}>≤1</span>: {lo.winRate}% win · <span style={{ fontFamily: "'JetBrains Mono', monospace", color: lo.pl >= 0 ? C.emerald : C.rose }}>{fmtMoney(lo.pl)}</span> over {lo.n} trades.
+                  </div>
+                );
+              })()}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                {Array.from({ length: CONFLUENCE_MAX + 1 }, (_, sc) => {
+                  const d = strategyImpact.confluence.byScore[sc] || { n: 0, pl: 0, winRate: 0 };
+                  const color = sc >= 3 ? C.emerald : sc >= 1 ? C.amber : C.textFaint;
+                  return (
+                    <div key={sc} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}`, opacity: d.n > 0 ? 1 : 0.45 }}>
+                      <div className="text-xs mb-1" style={{ color }}>{sc}/{CONFLUENCE_MAX} confl.</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color: d.pl >= 0 ? C.emerald : C.rose }}>
+                        {d.n > 0 ? fmtMoney(d.pl) : "—"}
+                      </div>
+                      <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                        {d.n} trades{d.n > 0 ? ` · ${d.winRate}%` : ""}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+                Confluence = how many of the 5 setup strategies fired supportively at entry: S1 aligned, S2 at an order block, S3 at an FVG, S4 a liquidity sweep, S5 at POC/in value area. (S6 session is context, not counted.) Only trades with candle data are included. If higher confluence shows a higher win rate, stacking setups is adding edge.
+              </div>
+            </div>
+          )}
 
           {/* S1 Impact breakdown */}
           {strategyImpact && hasCandleData && (
