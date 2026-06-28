@@ -310,6 +310,26 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
   const grossLoss = losses.reduce((s, t) => s + t.profit, 0);
   const netProfit = grossProfit + grossLoss;
 
+  // Win/loss streaks — single walk over time-sorted positions (pos is already
+  // sorted by openTime). Breakeven trades (profit === 0) reset the streak.
+  let longestWinStreak = 0, longestLossStreak = 0;
+  let runDir = 0, runLen = 0; // runDir: 1 win, -1 loss, 0 none
+  pos.forEach((p) => {
+    const d = p.profit > 0 ? 1 : p.profit < 0 ? -1 : 0;
+    if (d !== 0 && d === runDir) runLen++;
+    else { runDir = d; runLen = d === 0 ? 0 : 1; }
+    if (runDir === 1 && runLen > longestWinStreak) longestWinStreak = runLen;
+    if (runDir === -1 && runLen > longestLossStreak) longestLossStreak = runLen;
+  });
+  const currentStreak = { dir: runDir === 1 ? "win" : runDir === -1 ? "loss" : "none", len: runLen };
+
+  // Expectancy: average $ won/lost per trade. avgLoss is negative, so adding.
+  const avgWin = wins.length ? grossProfit / wins.length : 0;
+  const avgLoss = losses.length ? grossLoss / losses.length : 0; // negative
+  const winFrac = pos.length ? wins.length / pos.length : 0;
+  const lossFrac = pos.length ? losses.length / pos.length : 0;
+  const expectancy = winFrac * avgWin + lossFrac * avgLoss;
+
   const bops = rawBalanceOps.map((b) => ({ ...b, time: new Date(b.time) })).sort((a, b) => a.time - b.time);
   let depositsTotal = 0;
   bops.forEach((b) => {
@@ -451,6 +471,42 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
   const rTrades = tradesList.filter((t) => t.r != null);
   const avgR = rTrades.length ? round2(rTrades.reduce((s, t) => s + t.r, 0) / rTrades.length) : null;
 
+  // Monthly summaries — roll dailyStats up by YYYY-MM.
+  const monthMap = new Map();
+  dailyStats.forEach((d) => {
+    const ym = d.date.slice(0, 7);
+    if (!monthMap.has(ym)) monthMap.set(ym, { trades: 0, profit: 0, wins: 0, days: 0 });
+    const m = monthMap.get(ym);
+    m.trades += d.trades;
+    m.profit += d.profit;
+    m.wins += Math.round((d.winRate / 100) * d.trades);
+    m.days += 1;
+  });
+  const monthlyStats = Array.from(monthMap.entries())
+    .map(([ym, m]) => ({
+      ym,
+      label: new Date(ym + "-01T00:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+      trades: m.trades,
+      profit: round2(m.profit),
+      winRate: m.trades ? round1((m.wins / m.trades) * 100) : 0,
+      days: m.days,
+    }))
+    .sort((a, b) => b.ym.localeCompare(a.ym));
+
+  // Time-of-day × weekday grid — net P/L and counts per (weekday, hour).
+  // Uses the same local wall-clock the rest of the app buckets by.
+  const todGrid = {}; // key `${dow}-${hour}` -> { pl, n, wins }
+  pos.forEach((p) => {
+    const dow = p.openTime.getDay();
+    const hr = p.openTime.getHours();
+    const key = `${dow}-${hr}`;
+    if (!todGrid[key]) todGrid[key] = { pl: 0, n: 0, wins: 0 };
+    const cell = todGrid[key];
+    cell.pl += p.profit;
+    cell.n += 1;
+    if (p.profit > 0) cell.wins += 1;
+  });
+
   return {
     totalTrades: pos.length,
     winRate: round1((wins.length / pos.length) * 100),
@@ -487,6 +543,14 @@ function computeAnalytics(rawPositions, rawBalanceOps, settings = DEFAULT_SETTIN
     transferOutSum,
     transferInSum,
     netCapital: round2(depositsSum + withdrawalsSum),
+    longestWinStreak,
+    longestLossStreak,
+    currentStreak,
+    expectancy: round2(expectancy),
+    avgWin: round2(avgWin),
+    avgLoss: round2(avgLoss),
+    monthlyStats,
+    todGrid,
   };
 }
 
@@ -644,6 +708,62 @@ function CalendarHeatmap({ days }) {
   );
 }
 
+// Hour × weekday grid shaded by net P/L — surfaces which time windows pay off.
+// Hours are bucketed into 3-hour bands to keep the grid scannable.
+function TimeOfDayHeatmap({ grid }) {
+  const dowNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const dowOrder = [1, 2, 3, 4, 5, 6, 0];
+  const bands = [
+    { label: "00–03", lo: 0, hi: 3 }, { label: "03–06", lo: 3, hi: 6 },
+    { label: "06–09", lo: 6, hi: 9 }, { label: "09–12", lo: 9, hi: 12 },
+    { label: "12–15", lo: 12, hi: 15 }, { label: "15–18", lo: 15, hi: 18 },
+    { label: "18–21", lo: 18, hi: 21 }, { label: "21–24", lo: 21, hi: 24 },
+  ];
+  // Aggregate the per-hour grid into (dow, band) cells.
+  const cell = (dow, band) => {
+    let pl = 0, n = 0, wins = 0;
+    for (let h = band.lo; h < band.hi; h++) {
+      const c = grid[`${dow}-${h}`];
+      if (c) { pl += c.pl; n += c.n; wins += c.wins; }
+    }
+    return { pl, n, wins };
+  };
+  let maxAbs = 1;
+  dowOrder.forEach((dow) => bands.forEach((b) => { const c = cell(dow, b); if (Math.abs(c.pl) > maxAbs) maxAbs = Math.abs(c.pl); }));
+  const bg = (c) => {
+    if (!c.n) return C.panelAlt;
+    const intensity = 0.2 + 0.8 * Math.min(1, Math.abs(c.pl) / maxAbs);
+    return `rgba(${c.pl >= 0 ? "57,194,154" : "229,105,122"},${intensity})`;
+  };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ display: "inline-grid", gridTemplateColumns: `48px repeat(${bands.length}, 44px)`, gap: 3 }}>
+        <div />
+        {bands.map((b) => (
+          <div key={b.label} className="text-center" style={{ fontSize: 9, color: C.textFaint }}>{b.label}</div>
+        ))}
+        {dowOrder.map((dow, i) => (
+          <React.Fragment key={dow}>
+            <div className="flex items-center" style={{ fontSize: 10, color: C.textMuted }}>{dowNames[i]}</div>
+            {bands.map((b) => {
+              const c = cell(dow, b);
+              return (
+                <div
+                  key={b.label}
+                  title={c.n ? `${dowNames[i]} ${b.label}: ${fmtMoney(c.pl)} · ${c.n} trades · ${Math.round((c.wins / c.n) * 100)}% win` : `${dowNames[i]} ${b.label}: no trades`}
+                  style={{ height: 30, borderRadius: 4, background: bg(c), border: `0.5px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: c.n ? "rgba(230,237,245,0.85)" : C.textFaint, fontFamily: "'JetBrains Mono', monospace" }}
+                >
+                  {c.n || ""}
+                </div>
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function NoteInput({ value, onSave }) {
   const [v, setV] = useState(value || "");
   useEffect(() => { setV(value || ""); }, [value]);
@@ -793,6 +913,14 @@ const CONFLUENCE_RULES = [
 ];
 const CONFLUENCE_MAX = CONFLUENCE_RULES.length;
 
+// Extract #hashtags from a free-text note. Reuses the existing note field, so
+// tags need no new storage or migration — type "#fomo revenge entry" and it's tagged.
+function parseTags(note) {
+  const m = (note || "").match(/#[\w-]+/g);
+  if (!m) return [];
+  return [...new Set(m.map((t) => t.toLowerCase()))];
+}
+
 function confluenceOf(verdict) {
   const hits = [];
   let scored = 0; // how many strategies had a usable (non-null) verdict
@@ -823,7 +951,7 @@ export default function TradingJournal() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
   const [tradeSort, setTradeSort] = useState({ col: "openTime", dir: "desc" });
-  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "", minConfluence: "" });
+  const [tradeFilter, setTradeFilter] = useState({ symbol: "", side: "", structure: "", minConfluence: "", tag: "" });
   const [dailySort, setDailySort] = useState({ col: "date", dir: "desc" });
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
@@ -1136,6 +1264,9 @@ export default function TradingJournal() {
         return v && v.confluence && v.confluence.score >= min;
       });
     }
+    if (tradeFilter.tag) {
+      list = list.filter((t) => parseTags(t.note).includes(tradeFilter.tag));
+    }
     // Sort
     const dir = tradeSort.dir === "asc" ? 1 : -1;
     list.sort((a, b) => {
@@ -1163,6 +1294,14 @@ export default function TradingJournal() {
     });
     return list;
   }, [analytics, tradeSort, tradeFilter, tradeVerdicts, hasCandleData]);
+
+  // All #tags present across trade notes, for the tag filter dropdown.
+  const allTags = useMemo(() => {
+    if (!analytics) return [];
+    const set = new Set();
+    analytics.tradesList.forEach((t) => parseTags(t.note).forEach((tag) => set.add(tag)));
+    return [...set].sort();
+  }, [analytics]);
 
   // Strategy impact stats
   const strategyImpact = useMemo(() => {
@@ -1500,6 +1639,13 @@ export default function TradingJournal() {
             <StatCard icon={Percent} label="Largest loss" value={fmtMoney(a.largestLoss)} tone="bad" />
           </div>
 
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <StatCard icon={Target} label="Expectancy / trade" value={fmtMoney(a.expectancy)} tone={a.expectancy >= 0 ? "good" : "bad"} sub={`avg win ${fmtMoney(a.avgWin)} · avg loss ${fmtMoney(a.avgLoss)}`} />
+            <StatCard icon={TrendingUp} label="Longest win streak" value={`${a.longestWinStreak}`} tone="good" sub="consecutive wins" />
+            <StatCard icon={TrendingDown} label="Longest loss streak" value={`${a.longestLossStreak}`} tone="bad" sub="consecutive losses" />
+            <StatCard icon={Flame} label="Current streak" value={a.currentStreak.len ? `${a.currentStreak.len} ${a.currentStreak.dir}${a.currentStreak.len > 1 ? "s" : ""}` : "—"} tone={a.currentStreak.dir === "win" ? "good" : a.currentStreak.dir === "loss" ? "bad" : undefined} sub="most recent run" />
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
             <div className="rounded-xl p-4" style={{ background: C.panel, border: `0.5px solid ${C.emeraldDim}` }}>
               <div className="text-xs mb-1" style={{ color: C.textMuted }}>Trades held 3+ minutes</div>
@@ -1622,6 +1768,29 @@ export default function TradingJournal() {
               </div>
             </div>
           )}
+
+          {a.monthlyStats.length > 0 && (
+            <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+              <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Monthly summary</div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {a.monthlyStats.map((m) => (
+                  <div key={m.ym} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `0.5px solid ${C.border}`, borderLeft: `3px solid ${m.profit >= 0 ? C.emerald : C.rose}` }}>
+                    <div className="text-sm" style={{ color: C.text, fontWeight: 500 }}>{m.label}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 500, color: m.profit >= 0 ? C.emerald : C.rose, marginTop: 2 }}>{fmtMoney(m.profit)}</div>
+                    <div className="text-xs mt-1" style={{ color: C.textFaint }}>{m.trades} trades · {m.winRate}% win · {m.days} days</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
+            <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>When you trade — net P/L by weekday &amp; time</div>
+            <TimeOfDayHeatmap grid={a.todGrid} />
+            <div className="text-xs mt-3" style={{ color: C.textFaint }}>
+              Each cell is a 3-hour window on a weekday, shaded by net P/L (green profit, red loss); the number is trade count. Hover for win rate. Uses your MT5 server wall-clock — set the broker GMT offset in Settings if you want it aligned to real sessions.
+            </div>
+          </div>
 
           <div className="rounded-xl p-4 mb-6" style={{ background: C.panel, border: `0.5px solid ${C.border}` }}>
             <div className="text-sm mb-3" style={{ color: C.textMuted, fontWeight: 500 }}>Calendar</div>
@@ -1840,8 +2009,14 @@ export default function TradingJournal() {
                   <option value="5">5 confluences</option>
                 </select>
               )}
-              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure || tradeFilter.minConfluence) && (
-                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "", minConfluence: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
+              {allTags.length > 0 && (
+                <select value={tradeFilter.tag} onChange={(e) => setTradeFilter((p) => ({ ...p, tag: e.target.value }))} className="text-xs px-2 py-1 rounded" style={{ background: C.panelAlt, color: C.text, border: `0.5px solid ${C.border}` }}>
+                  <option value="">All tags</option>
+                  {allTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+                </select>
+              )}
+              {(tradeFilter.symbol || tradeFilter.side || tradeFilter.structure || tradeFilter.minConfluence || tradeFilter.tag) && (
+                <button onClick={() => setTradeFilter({ symbol: "", side: "", structure: "", minConfluence: "", tag: "" })} className="text-xs" style={{ color: C.textFaint, background: "transparent", border: "none", cursor: "pointer" }}>Clear</button>
               )}
             </div>
             <div style={{ maxHeight: 460, overflow: "auto" }}>
@@ -1931,7 +2106,28 @@ export default function TradingJournal() {
                               </td>
                             );
                           })()}
-                          <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}><NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} /></td>
+                          <td className="py-1.5 pl-3" onClick={(e) => e.stopPropagation()}>
+                            <NoteInput value={t.note} onSave={(note) => saveNote(t.ticket, note)} />
+                            {(() => {
+                              const tags = parseTags(t.note);
+                              if (!tags.length) return null;
+                              return (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {tags.map((tag) => (
+                                    <button
+                                      key={tag}
+                                      onClick={() => setTradeFilter((p) => ({ ...p, tag }))}
+                                      className="text-xs px-1.5 rounded"
+                                      style={{ color: C.amber, background: C.amberDim, border: "none", cursor: "pointer" }}
+                                      title={`Filter by ${tag}`}
+                                    >
+                                      {tag}
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            })()}
+                          </td>
                         </tr>
                         {isExpanded && (
                           <tr>
@@ -2011,6 +2207,7 @@ export default function TradingJournal() {
             </div>
             <div className="text-xs mt-3" style={{ color: C.textFaint }}>
               Click column headers to sort. R = profit ÷ risk. Structure: <span style={{ color: C.emerald }}>With</span> = aligned with BOS/CHoCH, <span style={{ color: C.rose }}>Against</span> = counter-trend, <span style={{ color: C.amber }}>No bias</span> = no confirmed structure yet, <span style={{ color: C.textFaint }}>Few bars</span> = insufficient candle history.
+              {" "}Type <span style={{ color: C.amber }}>#tags</span> in any note (e.g. "#fomo #scalp") to tag a trade — tags become clickable filters.
             </div>
           </div>
 
