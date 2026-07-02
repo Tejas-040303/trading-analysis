@@ -1,0 +1,6 @@
+# Local, machine-specific config (paths, symbols) — copy from config.example.json
+config.json
+
+# Python
+__pycache__/
+*.pyc

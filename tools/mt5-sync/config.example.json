@@ -1,0 +1,8 @@
+{
+  "outputDir": "C:/Users/EXCEL/trading-journal-sync",
+  "candleLookbackDays": 30,
+  "symbols": [
+    { "symbol": "GOLD", "timeframe": "M5" },
+    { "symbol": "GOLD", "timeframe": "M15" }
+  ]
+}
