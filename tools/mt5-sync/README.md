@@ -34,6 +34,13 @@ Edit `config.json`:
 Full trade history + balance operations are always pulled (they're small); only
 candles are bounded by `candleLookbackDays`.
 
+> **Storage budget.** The app keeps candles in browser `localStorage` (~5 MB cap).
+> Rough guide: **~1 day of M5 ≈ 45 KB** in the browser, so M5 much past ~60 days —
+> or several symbols/timeframes at once — can exceed the cap, and the Sync will
+> report "storage full." Start modest (the example's 30 days) and widen only if the
+> Settings storage meter has room. Per-trade strategy verdicts use **M5** when
+> present (M15+ only feed the Setup-scan panel), so prefer M5 for your budget.
+
 ## Run
 
 ```bash
