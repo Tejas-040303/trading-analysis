@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
+import { AuthGate } from "./components/AuthGate.jsx";
 import "./index.css";
 
 // Dump every tj_* localStorage key to a downloadable JSON file. Mirrors the
@@ -86,7 +87,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
     <div className="min-h-screen p-4 sm:p-6" style={{ background: "#04070D" }}>
       <div className="mx-auto" style={{ maxWidth: 1100 }}>
         <ErrorBoundary>
-          <App />
+          <AuthGate>
+            <App />
+          </AuthGate>
         </ErrorBoundary>
       </div>
     </div>
