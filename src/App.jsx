@@ -6,6 +6,7 @@ import { parseCandleCSV, inferSymbolTimeframe, mergeCandles, candleStorageKey } 
 import { computeTradeVerdicts, precomputeSmcState, scanSetups } from "./lib/smc";
 import { round2, round1, fmtMoney } from "./lib/format";
 import { DEFAULT_SETTINGS, parseWorkbookRows, confluenceOf, parseTags, CONFLUENCE_MAX, computeAnalytics, summarizePrior } from "./lib/analytics";
+import { parseSyncPayload, mergeSync } from "./lib/mt5Sync";
 import { C } from "./theme";
 import { SettingsModal } from "./components/SettingsModal";
 import { DashboardTab } from "./components/DashboardTab";
@@ -224,11 +225,57 @@ export default function TradingJournal() {
     URL.revokeObjectURL(url);
   }
 
+  // Merge a raw MT5 sync payload (latest.json text) into storage. Shared by the
+  // "Sync from MT5" folder flow and the manual Import (for non-Chromium browsers).
+  // Returns the merge stats; throws Error with a user-facing message on failure.
+  function handleMt5Sync(jsonText) {
+    const payload = parseSyncPayload(jsonText); // throws on a bad/unknown file
+    const res = mergeSync(
+      { positions, balanceOps, candleIndex, accountMeta, getCandles: (sym, tf) => storage.get(candleStorageKey(sym, tf)) },
+      payload
+    );
+    const now = new Date().toISOString();
+    // Persist, quota-checked like handleFiles — candles are the big writes.
+    let ok =
+      storage.set("tj_positions", res.positions) &&
+      storage.set("tj_balance_ops", res.balanceOps) &&
+      (!res.accountMeta || storage.set("tj_account_meta", res.accountMeta));
+    for (const u of res.candleUpdates) ok = storage.set(u.key, u.candles) && ok;
+    ok = storage.set("tj_candle_index", res.candleIndex) && ok;
+    storage.set("tj_last_updated", now);
+    loadStateFromStorage();
+    if (!ok) {
+      setUploadError("Storage is full — some synced data wasn't saved. Export a backup and clear old candle data from Settings.");
+      throw new Error("Storage is full — some synced data wasn't saved.");
+    }
+    setUploadError(null);
+    setUploadNotice(
+      `Synced from MT5 · ${res.stats.positions} trades · ${res.stats.balanceOps} balance ops · ${res.stats.candleGroups} candle set${res.stats.candleGroups === 1 ? "" : "s"}${res.stats.skipped ? ` · ${res.stats.skipped} row${res.stats.skipped === 1 ? "" : "s"} skipped` : ""}.`
+    );
+    return res.stats;
+  }
+
   async function importData(file) {
     if (!file) return;
+    let parsed;
     try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
+      parsed = JSON.parse(await file.text());
+    } catch {
+      setUploadError("That file isn't valid JSON.");
+      return;
+    }
+    // An MT5 sync export (latest.json) goes through the sync merge, not the backup path.
+    if (parsed && parsed.kind === "mt5-sync") {
+      try {
+        handleMt5Sync(parsed);
+        setShowSettings(false);
+      } catch (e) {
+        setUploadError(e.message || "Could not import that MT5 sync file.");
+      }
+      return;
+    }
+    // Otherwise treat it as a tj_ localStorage backup.
+    try {
       const keys = parsed && parsed.keys && typeof parsed.keys === "object" ? parsed.keys : parsed;
       let wrote = 0;
       Object.entries(keys || {}).forEach(([k, v]) => {
@@ -241,7 +288,7 @@ export default function TradingJournal() {
       setShowSettings(false);
       setUploadError(null);
     } catch (e) {
-      setUploadError("Could not import that file — make sure it's a JSON backup exported from this app.");
+      setUploadError("Could not import that file — make sure it's a JSON backup or MT5 sync file from this app.");
     }
   }
 
@@ -549,6 +596,7 @@ export default function TradingJournal() {
       onClose={() => setShowSettings(false)}
       onExport={exportData}
       onImportClick={() => importInputRef.current?.click()}
+      onMt5Sync={handleMt5Sync}
     />
   );
 
