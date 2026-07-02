@@ -1,13 +1,50 @@
 import { useState, useEffect, useRef } from "react";
-import { Download, Upload, X } from "lucide-react";
+import { Download, Upload, X, FolderOpen, RefreshCw } from "lucide-react";
 import { C } from "../theme";
 import { DEFAULT_SETTINGS } from "../lib/analytics";
 import { estimateUsageBytes } from "../lib/storage";
+import { isFsSyncSupported, pickSyncFolder, getSavedFolder, readLatest } from "../lib/fsSync";
 
-export function SettingsModal({ settings, onSave, onClose, onExport, onImportClick }) {
+export function SettingsModal({ settings, onSave, onClose, onExport, onImportClick, onMt5Sync }) {
   const [draft, setDraft] = useState(settings);
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
   const dialogRef = useRef(null);
+
+  // ── MT5 "Sync folder" (File System Access API; Chrome/Edge only) ──
+  const fsSupported = isFsSyncSupported();
+  const [folder, setFolder] = useState(null);          // FileSystemDirectoryHandle
+  const [folderName, setFolderName] = useState("");
+  const [sync, setSync] = useState({ status: "idle" }); // idle | busy | done | error
+
+  useEffect(() => {
+    if (!fsSupported) return;
+    getSavedFolder()
+      .then((h) => { if (h) { setFolder(h); setFolderName(h.name || "sync folder"); } })
+      .catch(() => {});
+  }, [fsSupported]);
+
+  const chooseFolder = async () => {
+    try {
+      const h = await pickSyncFolder();
+      setFolder(h);
+      setFolderName(h.name || "sync folder");
+      setSync({ status: "idle" });
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // user cancelled the picker
+      setSync({ status: "error", message: e?.message || "Could not open that folder." });
+    }
+  };
+
+  const syncNow = async () => {
+    setSync({ status: "busy" });
+    try {
+      const text = await readLatest(folder);
+      const stats = await onMt5Sync(text);
+      setSync({ status: "done", stats });
+    } catch (e) {
+      setSync({ status: "error", message: e?.message || "Sync failed." });
+    }
+  };
 
   // Modal a11y: focus the dialog on open, trap Tab within it, close on Escape,
   // and restore focus to the triggering control when it unmounts.
@@ -134,6 +171,52 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
               </div>
             );
           })()}
+        </div>
+
+        <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
+          <div className="text-sm mb-1" style={{ color: C.text }}>
+            Sync from MT5 <span className="text-xs" style={{ color: C.amber }}>beta</span>
+          </div>
+          {fsSupported ? (
+            <>
+              <div className="text-xs mb-2" style={{ color: C.textFaint }}>
+                Point this at the folder the MT5 sync helper writes{" "}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>latest.json</span> into, then Sync to pull your latest
+                trades &amp; candles. Nothing leaves your machine.
+              </div>
+              <div className="flex gap-2 flex-wrap items-center">
+                <button onClick={chooseFolder} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}>
+                  <FolderOpen size={14} /> {folder ? "Change folder" : "Choose sync folder"}
+                </button>
+                <button
+                  onClick={syncNow}
+                  disabled={!folder || sync.status === "busy"}
+                  style={{ ...btn(C.amber, "#2A1A02"), opacity: !folder || sync.status === "busy" ? 0.5 : 1, cursor: !folder || sync.status === "busy" ? "not-allowed" : "pointer" }}
+                >
+                  <RefreshCw size={14} /> {sync.status === "busy" ? "Syncing…" : "Sync now"}
+                </button>
+              </div>
+              {folder && (
+                <div className="text-xs mt-2" style={{ color: C.textFaint }}>
+                  Folder: <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted }}>{folderName}</span>
+                </div>
+              )}
+              {sync.status === "done" && (
+                <div className="text-xs mt-1" style={{ color: C.emerald }}>
+                  Synced ✓ {sync.stats.positions} trades · {sync.stats.candleGroups} candle set{sync.stats.candleGroups === 1 ? "" : "s"}
+                  {sync.stats.skipped ? ` · ${sync.stats.skipped} skipped` : ""}.
+                </div>
+              )}
+              {sync.status === "error" && (
+                <div className="text-xs mt-1" style={{ color: C.rose }}>{sync.message}</div>
+              )}
+            </>
+          ) : (
+            <div className="text-xs mb-2" style={{ color: C.textFaint }}>
+              One-click folder sync needs <span style={{ color: C.amber }}>Chrome or Edge</span>. On other browsers, run the helper
+              and load its <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>latest.json</span> via <strong>Import JSON</strong> above.
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between mt-5">
