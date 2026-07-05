@@ -192,6 +192,41 @@ export async function pushKeysObject(keys) {
   return stats;
 }
 
+// ── Agent keys (P8.3) ──
+// The plaintext key exists only in the moment of creation (returned once for
+// the user to copy into tools/mt5-sync/config.json); the DB stores its
+// SHA-256. The ingest edge function hashes the presented key and looks it up.
+const hex = (bytes) => Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+export async function createAgentKey(label) {
+  const userId = await uid();
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const key = `tjagent_${hex(bytes)}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const { data, error } = await supabase
+    .from("agent_keys")
+    .insert({ user_id: userId, key_hash: hex(new Uint8Array(digest)), label: label || null })
+    .select("id, label, created_at, last_seen")
+    .single();
+  if (error) fail("Creating agent key", error);
+  return { ...data, key };
+}
+
+export async function listAgentKeys() {
+  const { data, error } = await supabase
+    .from("agent_keys")
+    .select("id, label, created_at, last_seen")
+    .order("created_at", { ascending: true });
+  if (error) fail("Loading agent keys", error);
+  return data;
+}
+
+export async function deleteAgentKey(id) {
+  const { error } = await supabase.from("agent_keys").delete().eq("id", id);
+  if (error) fail("Revoking agent key", error);
+}
+
 // What's still sitting in this browser's localStorage (pre-P8.2 data)?
 export function localDataSummary() {
   const positions = storage.get("tj_positions") || [];

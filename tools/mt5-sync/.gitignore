@@ -1,6 +1,9 @@
 # Local, machine-specific config (paths, symbols) — copy from config.example.json
 config.json
 
+# Agent push cursors (P8.3) — machine-local, regenerated on a full push
+agent_state.json
+
 # Python
 __pycache__/
 *.pyc
