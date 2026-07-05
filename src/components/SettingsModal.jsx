@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { Download, Upload, X, FolderOpen, RefreshCw } from "lucide-react";
 import { C } from "../theme";
 import { DEFAULT_SETTINGS } from "../lib/analytics";
-import { estimateUsageBytes } from "../lib/storage";
 import { isFsSyncSupported, pickSyncFolder, getSavedFolder, readLatest } from "../lib/fsSync";
 
 export function SettingsModal({ settings, onSave, onClose, onExport, onImportClick, onMt5Sync }) {
@@ -155,22 +154,11 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
 
         <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
           <div className="text-sm mb-1" style={{ color: C.text }}>Backup</div>
-          <div className="text-xs mb-2" style={{ color: C.textFaint }}>Your data lives only in this browser. Export a JSON backup, or import one to restore it after a cache clear or on another device.</div>
+          <div className="text-xs mb-2" style={{ color: C.textFaint }}>Your journal lives in your cloud account (private, tied to your login) and is available from any browser you sign in on. JSON backups remain as an offline safety copy — export one now and then, or import one to restore/merge.</div>
           <div className="flex gap-2">
             <button onClick={onExport} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Download size={14} /> Export JSON</button>
             <button onClick={onImportClick} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}><Upload size={14} /> Import JSON</button>
           </div>
-          {(() => {
-            const mb = estimateUsageBytes() / (1024 * 1024);
-            // Browsers cap localStorage near 5 MB; warn as the journal + candles approach it.
-            const tone = mb >= 4.5 ? C.rose : mb >= 3.5 ? C.amber : C.textFaint;
-            return (
-              <div className="text-xs mt-2" style={{ color: tone }}>
-                Storage in use: ~{mb.toFixed(2)} MB of ~5 MB.
-                {mb >= 3.5 && " Approaching the browser limit — export a backup and consider resetting candle data."}
-              </div>
-            );
-          })()}
         </div>
 
         <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
@@ -182,7 +170,7 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
               <div className="text-xs mb-2" style={{ color: C.textFaint }}>
                 Point this at the folder the MT5 sync helper writes{" "}
                 <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>latest.json</span> into, then Sync to pull your latest
-                trades &amp; candles. Nothing leaves your machine.
+                trades &amp; candles into your cloud journal.
               </div>
               <div className="flex gap-2 flex-wrap items-center">
                 <button onClick={chooseFolder} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}>
