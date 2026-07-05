@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { UploadCloud, RotateCcw, Settings, BarChart3 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { storage } from "./lib/storage";
-import { parseCandleCSV, inferSymbolTimeframe, mergeCandles, candleStorageKey } from "./lib/candleParser";
+import * as db from "./lib/db";
+import { parseCandleCSV, inferSymbolTimeframe, mergeCandles } from "./lib/candleParser";
 import { computeTradeVerdicts, precomputeSmcState, scanSetups } from "./lib/smc";
 import { round2, round1, fmtMoney } from "./lib/format";
 import { DEFAULT_SETTINGS, parseWorkbookRows, confluenceOf, parseTags, CONFLUENCE_MAX, computeAnalytics, summarizePrior } from "./lib/analytics";
@@ -27,6 +27,8 @@ export default function TradingJournal() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [candleIndex, setCandleIndex] = useState({}); // { "GOLD_M5": { symbol, timeframe, count } }
+  const [candles, setCandles] = useState({}); // { "GOLD_M5": [candle, …] } — all series, loaded at startup
+  const [legacyLocal, setLegacyLocal] = useState(null); // pre-P8.2 localStorage data awaiting migration
   const [expandedTrade, setExpandedTrade] = useState(null);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [chartRange, setChartRange] = useState({ from: "", to: "" }); // date range filter for charts
@@ -46,19 +48,49 @@ export default function TradingJournal() {
     document.head.appendChild(link);
   }, []);
 
-  function loadStateFromStorage() {
-    setPositions(storage.get("tj_positions") || []);
-    setBalanceOps(storage.get("tj_balance_ops") || []);
-    setAccountMeta(storage.get("tj_account_meta") || null);
-    setLastUpdated(storage.get("tj_last_updated") || null);
-    setSettings({ ...DEFAULT_SETTINGS, ...(storage.get("tj_settings") || {}) });
-    setCandleIndex(storage.get("tj_candle_index") || {});
+  async function loadStateFromDb() {
+    const snap = await db.fetchAll();
+    setPositions(snap.positions);
+    setBalanceOps(snap.balanceOps);
+    setAccountMeta(snap.accountMeta);
+    setLastUpdated(snap.lastUpdated);
+    setSettings({ ...DEFAULT_SETTINGS, ...snap.settings });
+    setCandleIndex(snap.candleIndex);
+    setCandles(snap.candles);
   }
 
   useEffect(() => {
-    loadStateFromStorage();
-    setInitializing(false);
+    let alive = true;
+    loadStateFromDb()
+      .catch((e) => {
+        if (alive) setUploadError(`Could not load your journal from the cloud — ${e.message} Check your connection and reload.`);
+      })
+      .finally(() => {
+        if (alive) {
+          setLegacyLocal(db.localDataSummary());
+          setInitializing(false);
+        }
+      });
+    return () => { alive = false; };
   }, []);
+
+  // One-time move of this browser's pre-P8.2 localStorage data into Postgres.
+  // db.migrateLocalToCloud verifies cloud row counts before clearing local.
+  async function runMigration() {
+    setProcessing(true);
+    setUploadError(null);
+    try {
+      const stats = await db.migrateLocalToCloud();
+      await loadStateFromDb();
+      setLegacyLocal(null);
+      setUploadNotice(
+        `Moved to your cloud journal ✓ ${stats.positions} trades · ${stats.balanceOps} balance ops · ${stats.candleSets} candle set${stats.candleSets === 1 ? "" : "s"} (${stats.candlesTotal} candles). This browser's local copy has been cleared.`
+      );
+    } catch (e) {
+      setUploadError(`Migration failed — ${e.message}`);
+    }
+    setProcessing(false);
+  }
 
   async function handleFiles(fileList) {
     const files = Array.from(fileList || []).filter((f) => /\.xlsx$/i.test(f.name));
@@ -97,17 +129,20 @@ export default function TradingJournal() {
     setBalanceOps(mergedBalanceOps);
     setAccountMeta(newMeta);
     setLastUpdated(now);
-    // storage.set returns false on failure (e.g. quota exceeded) — collect the result
-    // so a full disk surfaces to the user instead of silently dropping their data.
-    const writeOk =
-      storage.set("tj_positions", mergedPositions) &&
-      storage.set("tj_balance_ops", mergedBalanceOps) &&
-      (!newMeta || storage.set("tj_account_meta", newMeta)) &&
-      storage.set("tj_last_updated", now);
+    // Persist to Postgres; a network failure leaves this session's state intact
+    // but must surface so the user knows the upload isn't saved permanently.
+    let writeOk = true;
+    try {
+      await db.upsertPositions(mergedPositions);
+      await db.upsertBalanceOps(mergedBalanceOps);
+      await db.saveAccountMeta(newMeta, now);
+    } catch (e) {
+      writeOk = false;
+    }
     if (failed.length) {
       setUploadError(`Could not read: ${failed.join(", ")}. Make sure these are MT5 Trade History Report exports.`);
     } else if (!writeOk) {
-      setUploadError("Storage is full — your latest upload may not be saved permanently. Export a JSON backup from Settings, then clear old candle data to free space.");
+      setUploadError("Cloud save failed — this upload is visible now but won't survive a reload. Check your connection and upload again.");
     } else if (totalSkipped > 0) {
       setUploadNotice(`Loaded ${mergedPositions.length} trades · ${totalSkipped} row${totalSkipped === 1 ? "" : "s"} skipped (unreadable date/format).`);
     }
@@ -125,14 +160,14 @@ export default function TradingJournal() {
     setUploadNotice(null);
     const failed = [];
     const newIndex = { ...candleIndex };
+    const newCandles = { ...candles };
     let totalSkipped = 0;
-    let quotaHit = false;
 
     for (const file of files) {
       try {
         const text = await file.text();
-        const { candles, skipped } = parseCandleCSV(text);
-        if (!candles.length) throw new Error("no candles parsed");
+        const { candles: parsed, skipped } = parseCandleCSV(text);
+        if (!parsed.length) throw new Error("no candles parsed");
         totalSkipped += skipped || 0;
 
         let { symbol, timeframe } = inferSymbolTimeframe(file.name);
@@ -145,30 +180,27 @@ export default function TradingJournal() {
         symbol = symbol.toUpperCase();
         timeframe = timeframe.toUpperCase();
 
-        const key = candleStorageKey(symbol, timeframe);
-        const existing = storage.get(key) || [];
-        const merged = mergeCandles(existing, candles);
-        // Candle datasets are the largest writes — a failure here is the most
-        // likely place to blow the localStorage quota, so check it explicitly.
-        if (!storage.set(key, merged)) {
-          quotaHit = true;
-          failed.push(`${file.name} (storage full)`);
+        const indexKey = `${symbol}_${timeframe}`;
+        const merged = mergeCandles(newCandles[indexKey] || [], parsed);
+        // Upsert only this file's candles — the DB's (symbol, timeframe, time)
+        // key makes that equivalent to writing the whole merged series.
+        try {
+          await db.upsertCandles(symbol, timeframe, parsed);
+        } catch (e) {
+          failed.push(`${file.name} (cloud save failed)`);
           continue;
         }
-
-        const indexKey = `${symbol}_${timeframe}`;
+        newCandles[indexKey] = merged;
         newIndex[indexKey] = { symbol, timeframe, count: merged.length };
       } catch (err) {
         failed.push(file.name);
       }
     }
 
+    setCandles(newCandles);
     setCandleIndex(newIndex);
-    storage.set("tj_candle_index", newIndex);
 
-    if (quotaHit) {
-      setUploadError("Storage is full — candle data couldn't be saved. Export a JSON backup from Settings, then reset or remove some candle data to free space. (localStorage caps around 5 MB.)");
-    } else if (failed.length) {
+    if (failed.length) {
       setUploadError(`Could not read candles: ${failed.join(", ")}. Make sure these are MT5 CSV candle exports.`);
     } else if (totalSkipped > 0) {
       setUploadNotice(`Candles loaded · ${totalSkipped} malformed line${totalSkipped === 1 ? "" : "s"} skipped.`);
@@ -176,43 +208,50 @@ export default function TradingJournal() {
     setProcessing(false);
   }
 
-  function handleReset() {
-    setPositions([]); setBalanceOps([]); setAccountMeta(null); setLastUpdated(null);
+  async function handleReset() {
     setConfirmingReset(false);
+    setProcessing(true);
     try {
-      storage.remove("tj_positions");
-      storage.remove("tj_balance_ops");
-      storage.remove("tj_account_meta");
-      storage.remove("tj_last_updated");
-      Object.keys(candleIndex).forEach((k) => {
-        const ci = candleIndex[k];
-        storage.remove(candleStorageKey(ci.symbol, ci.timeframe));
-      });
-      storage.remove("tj_candle_index");
-      setCandleIndex({});
-    } catch (e) {}
+      await db.deleteAllData();
+      setPositions([]); setBalanceOps([]); setAccountMeta(null); setLastUpdated(null);
+      setCandleIndex({}); setCandles({});
+      setUploadError(null);
+    } catch (e) {
+      setUploadError(`Reset failed — ${e.message}`);
+    }
+    setProcessing(false);
   }
 
   function saveNote(ticket, note) {
-    setPositions((prev) => {
-      const next = prev.map((p) => (p.ticket === ticket ? { ...p, note } : p));
-      try { storage.set("tj_positions", next); } catch (e) {}
-      return next;
-    });
+    setPositions((prev) => prev.map((p) => (p.ticket === ticket ? { ...p, note } : p)));
+    db.updatePositionNote(ticket, note).catch((e) =>
+      setUploadError(`Note not saved to the cloud — ${e.message}`)
+    );
   }
 
   function saveSettings(next) {
     setSettings(next);
-    try { storage.set("tj_settings", next); } catch (e) {}
+    db.saveSettings(next).catch((e) =>
+      setUploadError(`Settings not saved to the cloud — ${e.message}`)
+    );
     setShowSettings(false);
   }
 
+  // Backup export keeps the historical `tj_*` keys format (importData and old
+  // backups stay mutually compatible) but is built from in-memory state — after
+  // the migration, localStorage no longer holds the journal.
   function exportData() {
-    const keys = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("tj_")) keys[k] = localStorage.getItem(k);
-    }
+    const keys = {
+      tj_positions: positions,
+      tj_balance_ops: balanceOps,
+      tj_candle_index: candleIndex,
+    };
+    if (accountMeta) keys.tj_account_meta = accountMeta;
+    if (lastUpdated) keys.tj_last_updated = lastUpdated;
+    keys.tj_settings = settings;
+    Object.entries(candles).forEach(([indexKey, list]) => {
+      keys[`tj_candles_${indexKey}`] = list;
+    });
     const payload = { app: "trading-journal", exportedAt: new Date().toISOString(), keys };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -225,28 +264,37 @@ export default function TradingJournal() {
     URL.revokeObjectURL(url);
   }
 
-  // Merge a raw MT5 sync payload (latest.json text) into storage. Shared by the
-  // "Sync from MT5" folder flow and the manual Import (for non-Chromium browsers).
-  // Returns the merge stats; throws Error with a user-facing message on failure.
-  function handleMt5Sync(jsonText) {
+  // Merge a raw MT5 sync payload (latest.json text) into the cloud journal.
+  // Shared by the "Sync from MT5" folder flow and the manual Import (for
+  // non-Chromium browsers). Returns the merge stats; throws Error with a
+  // user-facing message on failure.
+  async function handleMt5Sync(jsonText) {
     const payload = parseSyncPayload(jsonText); // throws on a bad/unknown file
     const res = mergeSync(
-      { positions, balanceOps, candleIndex, accountMeta, getCandles: (sym, tf) => storage.get(candleStorageKey(sym, tf)) },
+      { positions, balanceOps, candleIndex, accountMeta, getCandles: (sym, tf) => candles[`${sym}_${tf}`] || null },
       payload
     );
     const now = new Date().toISOString();
-    // Persist, quota-checked like handleFiles — candles are the big writes.
-    let ok =
-      storage.set("tj_positions", res.positions) &&
-      storage.set("tj_balance_ops", res.balanceOps) &&
-      (!res.accountMeta || storage.set("tj_account_meta", res.accountMeta));
-    for (const u of res.candleUpdates) ok = storage.set(u.key, u.candles) && ok;
-    ok = storage.set("tj_candle_index", res.candleIndex) && ok;
-    storage.set("tj_last_updated", now);
-    loadStateFromStorage();
-    if (!ok) {
-      setUploadError("Storage is full — some synced data wasn't saved. Export a backup and clear old candle data from Settings.");
-      throw new Error("Storage is full — some synced data wasn't saved.");
+    try {
+      await db.upsertPositions(res.positions);
+      await db.upsertBalanceOps(res.balanceOps);
+      await db.saveAccountMeta(res.accountMeta, now);
+      for (const u of res.candleUpdates) await db.upsertCandles(u.symbol, u.timeframe, u.candles);
+    } catch (e) {
+      setUploadError(`Cloud save failed during sync — ${e.message}`);
+      throw new Error(`Cloud save failed — ${e.message}`);
+    }
+    setPositions(res.positions);
+    setBalanceOps(res.balanceOps);
+    if (res.accountMeta) setAccountMeta(res.accountMeta);
+    setLastUpdated(now);
+    setCandleIndex(res.candleIndex);
+    if (res.candleUpdates.length) {
+      setCandles((prev) => {
+        const next = { ...prev };
+        res.candleUpdates.forEach((u) => { next[`${u.symbol}_${u.timeframe}`] = u.candles; });
+        return next;
+      });
     }
     setUploadError(null);
     setUploadNotice(
@@ -267,29 +315,29 @@ export default function TradingJournal() {
     // An MT5 sync export (latest.json) goes through the sync merge, not the backup path.
     if (parsed && parsed.kind === "mt5-sync") {
       try {
-        handleMt5Sync(parsed);
+        await handleMt5Sync(parsed);
         setShowSettings(false);
       } catch (e) {
         setUploadError(e.message || "Could not import that MT5 sync file.");
       }
       return;
     }
-    // Otherwise treat it as a tj_ localStorage backup.
+    // Otherwise treat it as a tj_ backup: push its keys to the cloud, reload.
+    setProcessing(true);
     try {
       const keys = parsed && parsed.keys && typeof parsed.keys === "object" ? parsed.keys : parsed;
-      let wrote = 0;
-      Object.entries(keys || {}).forEach(([k, v]) => {
-        if (!k.startsWith("tj_")) return;
-        localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
-        wrote++;
-      });
-      if (!wrote) throw new Error("no tj_ keys");
-      loadStateFromStorage();
+      const tjKeys = Object.fromEntries(
+        Object.entries(keys || {}).filter(([k]) => k.startsWith("tj_"))
+      );
+      if (!Object.keys(tjKeys).length) throw new Error("no tj_ keys");
+      await db.pushKeysObject(tjKeys);
+      await loadStateFromDb();
       setShowSettings(false);
       setUploadError(null);
     } catch (e) {
       setUploadError("Could not import that file — make sure it's a JSON backup or MT5 sync file from this app.");
     }
+    setProcessing(false);
   }
 
   const { analytics, prior } = useMemo(() => {
@@ -305,7 +353,7 @@ export default function TradingJournal() {
   }, [positions, balanceOps, settings]);
 
   // Compute SMC verdicts for each trade when candle data is available.
-  // Loads candle data lazily per symbol from localStorage.
+  // All candle series are in state (loaded from the DB at startup).
   const tradeVerdicts = useMemo(() => {
     if (!analytics || !analytics.tradesList.length) return {};
     const candleCache = {};
@@ -315,7 +363,7 @@ export default function TradingJournal() {
       for (const tf of ["M5", "M1", "M15", "M30", "H1"]) {
         const key = `${symbol}_${tf}`;
         if (candleIndex[key]) {
-          const data = storage.get(candleStorageKey(symbol, tf));
+          const data = candles[key];
           if (data && data.length) {
             candleCache[symbol] = data;
             return data;
@@ -347,7 +395,7 @@ export default function TradingJournal() {
       verdicts[t.ticket] = v;
     }
     return verdicts;
-  }, [analytics, candleIndex, settings.swingLookback, settings.brokerGmtOffsetHours]);
+  }, [analytics, candleIndex, candles, settings.swingLookback, settings.brokerGmtOffsetHours]);
 
   const hasCandleData = Object.keys(candleIndex).length > 0;
 
@@ -520,11 +568,11 @@ export default function TradingJournal() {
 
     const all = [];
     Object.values(candleIndex).forEach((ci) => {
-      const candles = storage.get(candleStorageKey(ci.symbol, ci.timeframe));
-      if (!candles || !candles.length) return;
-      const smc = precomputeSmcState(candles, lookback);
+      const series = candles[`${ci.symbol}_${ci.timeframe}`];
+      if (!series || !series.length) return;
+      const smc = precomputeSmcState(series, lookback);
       if (!smc) return;
-      const setups = scanSetups(candles, smc, { swingLookback: lookback, minScore: 3 });
+      const setups = scanSetups(series, smc, { swingLookback: lookback, minScore: 3 });
       const symTrades = tradesBySymbol[ci.symbol] || [];
       setups.forEach((s) => {
         const st = new Date(s.time).getTime();
@@ -550,7 +598,7 @@ export default function TradingJournal() {
       skippedAvgMfeR: avg(skipped, "mfeR"),
       skippedAvgMaeR: avg(skipped, "maeR"),
     };
-  }, [analytics, candleIndex, hasCandleData, settings.swingLookback]);
+  }, [analytics, candleIndex, candles, hasCandleData, settings.swingLookback]);
 
   const toggleSort = (col) => setTradeSort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
   const toggleDailySort = (col) => setDailySort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
@@ -664,6 +712,30 @@ export default function TradingJournal() {
     </div>
   );
 
+  // Offered until this browser's pre-P8.2 localStorage data has been moved to
+  // the cloud journal (safe to run even if some of it was already uploaded —
+  // everything upserts by its natural key).
+  const migrationBanner = legacyLocal && (
+    <div
+      className="flex items-center justify-between flex-wrap gap-3 text-sm mb-4 px-4 py-3 rounded-xl"
+      style={{ color: C.text, background: C.panelAlt, border: `1px solid ${C.amberDim}` }}
+    >
+      <span>
+        This browser still holds journal data from before the cloud upgrade
+        {" "}({legacyLocal.positions} trade{legacyLocal.positions === 1 ? "" : "s"} · {legacyLocal.candleSets} candle set{legacyLocal.candleSets === 1 ? "" : "s"}).
+        Move it into your cloud journal — one time, then this copy is cleared.
+      </span>
+      <button
+        onClick={runMigration}
+        disabled={processing}
+        className="text-sm px-3 py-1.5 rounded-lg"
+        style={{ background: C.amber, color: "#2A1A02", fontWeight: 500, border: "none", cursor: processing ? "wait" : "pointer", opacity: processing ? 0.6 : 1 }}
+      >
+        {processing ? "Moving…" : "Move to cloud"}
+      </button>
+    </div>
+  );
+
   const dropzone = (
     <div
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -729,13 +801,18 @@ export default function TradingJournal() {
   );
 
   if (initializing) {
-    return <div style={{ background: C.bg, minHeight: 400 }} className="p-8" />;
+    return (
+      <div style={{ background: C.bg, minHeight: 400 }} className="p-8">
+        <div className="text-sm" style={{ color: C.textFaint }}>Loading your journal…</div>
+      </div>
+    );
   }
 
   if (!analytics) {
     return (
       <div style={{ background: C.bg, color: C.text, minHeight: 480 }} className="rounded-2xl p-6 md:p-8">
         {headerNode}
+        {migrationBanner}
         {prior && (
           <div className="text-sm mb-4 px-3 py-2 rounded-lg" style={{ color: C.amber, background: C.panelAlt }}>
             No trades on or after {seriousLabel} in your uploaded data yet — upload reports from {seriousLabel} onward to populate the dashboard. Your earlier history is shown below.
@@ -811,6 +888,7 @@ export default function TradingJournal() {
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: 480 }} className="rounded-2xl p-6 md:p-8">
       {headerNode}
+      {migrationBanner}
 
       <div className="text-xs mb-4" style={{ color: C.textFaint }}>
         Showing {a.totalTrades} trades since {seriousLabel}.{prior ? " Your earlier beginner-era history is archived in the Dashboard tab." : ""}
