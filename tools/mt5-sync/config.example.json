@@ -3,6 +3,13 @@
   "candleLookbackDays": 30,
   "symbols": [
     { "symbol": "GOLD", "timeframe": "M5" },
-    { "symbol": "GOLD", "timeframe": "M15" }
-  ]
+    { "symbol": "GOLD", "timeframe": "M15" },
+    { "symbol": "GOLD", "timeframe": "M30" },
+    { "symbol": "GOLD", "timeframe": "H1" },
+    { "symbol": "GOLD", "timeframe": "H4" }
+  ],
+
+  "ingestUrl": "https://qmgslxaladefllaazdex.supabase.co/functions/v1/ingest",
+  "agentKey": "PASTE-KEY-FROM-APP-SETTINGS (Settings -> Signals agent -> Generate agent key)",
+  "agentIntervalSeconds": 60
 }

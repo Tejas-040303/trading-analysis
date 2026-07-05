@@ -1,8 +1,21 @@
 import { useState, useEffect, useRef } from "react";
-import { Download, Upload, X, FolderOpen, RefreshCw } from "lucide-react";
+import { Download, Upload, X, FolderOpen, RefreshCw, KeyRound, Trash2 } from "lucide-react";
 import { C } from "../theme";
 import { DEFAULT_SETTINGS } from "../lib/analytics";
 import { isFsSyncSupported, pickSyncFolder, getSavedFolder, readLatest } from "../lib/fsSync";
+import { createAgentKey, listAgentKeys, deleteAgentKey } from "../lib/db";
+import { SUPABASE_URL } from "../lib/supabaseClient";
+
+// "3 min ago" formatting for the agent heartbeat.
+function agoLabel(iso) {
+  if (!iso) return "never";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} days ago`;
+}
 
 export function SettingsModal({ settings, onSave, onClose, onExport, onImportClick, onMt5Sync }) {
   const [draft, setDraft] = useState(settings);
@@ -44,6 +57,43 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
       setSync({ status: "error", message: e?.message || "Sync failed." });
     }
   };
+
+  // ── Signals agent keys (P8.3) ──
+  const [agentKeys, setAgentKeys] = useState(null);   // null = loading
+  const [freshKey, setFreshKey] = useState(null);     // plaintext, shown once after generation
+  const [agentErr, setAgentErr] = useState("");
+  const ingestUrl = `${SUPABASE_URL}/functions/v1/ingest`;
+
+  const refreshAgentKeys = () => {
+    listAgentKeys().then(setAgentKeys).catch((e) => { setAgentKeys([]); setAgentErr(e.message); });
+  };
+  useEffect(refreshAgentKeys, []);
+
+  const generateKey = async () => {
+    setAgentErr("");
+    try {
+      const created = await createAgentKey(`Agent key ${new Date().toISOString().slice(0, 10)}`);
+      setFreshKey(created.key);
+      refreshAgentKeys();
+    } catch (e) {
+      setAgentErr(e.message);
+    }
+  };
+
+  const revokeKey = async (id) => {
+    setAgentErr("");
+    try {
+      await deleteAgentKey(id);
+      refreshAgentKeys();
+    } catch (e) {
+      setAgentErr(e.message);
+    }
+  };
+
+  const lastSeen = agentKeys && agentKeys.length
+    ? agentKeys.reduce((max, k) => (k.last_seen && (!max || k.last_seen > max) ? k.last_seen : max), null)
+    : null;
+  const agentLive = lastSeen && Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000;
 
   // Modal a11y: focus the dialog on open, trap Tab within it, close on Escape,
   // and restore focus to the triggering control when it unmounts.
@@ -205,6 +255,53 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
               and load its <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>latest.json</span> via <strong>Import JSON</strong> above.
             </div>
           )}
+        </div>
+
+        <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
+          <div className="text-sm mb-1" style={{ color: C.text }}>
+            Signals agent <span className="text-xs" style={{ color: C.amber }}>P8</span>
+          </div>
+          <div className="text-xs mb-2" style={{ color: C.textFaint }}>
+            The background helper (<span style={{ fontFamily: "'JetBrains Mono', monospace" }}>tools/mt5-sync/agent.py</span>) pushes
+            trades &amp; candles to your cloud journal continuously. Generate a key, put it in the helper's{" "}
+            <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>config.json</span>, and run the agent while MT5 is open.
+          </div>
+          <div className="text-xs mb-2" style={{ color: agentLive ? C.emerald : C.textFaint }}>
+            {agentKeys === null ? "Checking agent status…" : `Agent last seen: ${agoLabel(lastSeen)}${agentLive ? " · connected" : ""}`}
+          </div>
+          {agentKeys && agentKeys.length > 0 && (
+            <div className="mb-2">
+              {agentKeys.map((k) => (
+                <div key={k.id} className="flex items-center justify-between gap-2 text-xs py-1" style={{ color: C.textMuted, borderBottom: `0.5px solid ${C.borderSoft}` }}>
+                  <span>{k.label || "Agent key"} · created {new Date(k.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · seen {agoLabel(k.last_seen)}</span>
+                  <button
+                    onClick={() => revokeKey(k.id)}
+                    aria-label={`Revoke ${k.label || "agent key"}`}
+                    title="Revoke this key"
+                    style={{ background: "transparent", border: "none", color: C.rose, cursor: "pointer", padding: 2 }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button onClick={generateKey} style={btn(C.panelAlt, C.text, `0.5px solid ${C.border}`)}>
+            <KeyRound size={14} /> Generate agent key
+          </button>
+          {freshKey && (
+            <div className="text-xs mt-2 p-2 rounded-lg" style={{ background: C.panelAlt, border: `0.5px solid ${C.amberDim}` }}>
+              <div style={{ color: C.amber, marginBottom: 4 }}>Copy this key now — it is shown only once.</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", color: C.text, wordBreak: "break-all", userSelect: "all" }}>{freshKey}</div>
+              <div style={{ color: C.textFaint, marginTop: 6 }}>
+                In <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>tools/mt5-sync/config.json</span> set{" "}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>"agentKey"</span> to it and{" "}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>"ingestUrl"</span> to{" "}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.textMuted, wordBreak: "break-all" }}>{ingestUrl}</span>
+              </div>
+            </div>
+          )}
+          {agentErr && <div className="text-xs mt-2" style={{ color: C.rose }}>{agentErr}</div>}
         </div>
 
         <div className="flex items-center justify-between mt-5">

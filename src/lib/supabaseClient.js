@@ -14,3 +14,6 @@ const key =
   "sb_publishable_dFsF0HgsU8SCuNaDejI9Bw_tTVf6P75";
 
 export const supabase = createClient(url, key);
+
+// For display/config purposes (e.g. the agent's ingest endpoint in Settings).
+export const SUPABASE_URL = url;

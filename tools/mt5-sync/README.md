@@ -83,3 +83,31 @@ python test_aggregate.py       # or: pytest test_aggregate.py
   logged in (the script attaches to the running instance).
 - No candles for a symbol usually means it isn't in **Market Watch** — add it.
 - `config.json` is your local file; keep any machine-specific paths out of commits.
+
+## P8.3 — the cloud agent (`agent.py`)
+
+`sync.py` writes a file you import by hand; **`agent.py` pushes the same
+payload to your cloud journal automatically** on an interval (default 60 s),
+so the web app stays fresh without touching the Sync button. The P7 folder
+flow keeps working — the agent still writes `latest.json` every cycle as an
+offline fallback.
+
+Setup (once):
+
+1. In the app: **Settings → Signals agent → Generate agent key** (shown once — copy it).
+2. `copy config.example.json config.json`, then set `agentKey` (and check
+   `ingestUrl`, `symbols` — the P8 signal engine will want M5/M15/M30/H1/H4).
+3. With MT5 open and logged in:
+
+```
+python agent.py            # loop forever (Ctrl+C to stop)
+python agent.py --once     # one push, then exit
+python agent.py --dry-run  # show what would be pushed, send nothing
+```
+
+How it stays cheap: `agent_state.json` remembers per-series cursors, so each
+cycle re-sends only new bars/trades (plus a small overlap — the server upserts,
+so re-sends are harmless). Delete `agent_state.json` to force a full re-push.
+The agent is **read-only against MT5** and holds **no broker credentials**;
+the agent key only authorizes writing journal data to *your* account, and you
+can revoke it any time in Settings. Tests: `python test_agent_core.py`.
