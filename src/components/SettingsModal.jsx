@@ -4,7 +4,7 @@ import { C } from "../theme";
 import { DEFAULT_SETTINGS } from "../lib/analytics";
 import { isFsSyncSupported, pickSyncFolder, getSavedFolder, readLatest } from "../lib/fsSync";
 import { createAgentKey, listAgentKeys, deleteAgentKey } from "../lib/db";
-import { SUPABASE_URL } from "../lib/supabaseClient";
+import { supabase, SUPABASE_URL } from "../lib/supabaseClient";
 
 // "3 min ago" formatting for the agent heartbeat.
 function agoLabel(iso) {
@@ -90,6 +90,28 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
     }
   };
 
+  // ── Telegram (P8.4) ──
+  const [tgTest, setTgTest] = useState({ status: "idle" }); // idle | busy | ok | error
+  const testTelegram = async () => {
+    setTgTest({ status: "busy" });
+    try {
+      const { data, error } = await supabase.functions.invoke("notify-test", {
+        body: { token: draft.telegramBotToken || "", chatId: draft.telegramChatId || "" },
+      });
+      if (error) {
+        // supabase-js wraps non-2xx responses; surface the function's message
+        const detail = await error.context?.json?.().then((j) => j.error).catch(() => null);
+        setTgTest({ status: "error", message: detail || error.message });
+      } else if (data?.ok) {
+        setTgTest({ status: "ok" });
+      } else {
+        setTgTest({ status: "error", message: data?.error || "Unknown response" });
+      }
+    } catch (e) {
+      setTgTest({ status: "error", message: e?.message || "Request failed" });
+    }
+  };
+
   const lastSeen = agentKeys && agentKeys.length
     ? agentKeys.reduce((max, k) => (k.last_seen && (!max || k.last_seen > max) ? k.last_seen : max), null)
     : null;
@@ -164,6 +186,8 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
           ? null
           : Number(draft.brokerGmtOffsetHours),
       swingLookback: num(draft.swingLookback, DEFAULT_SETTINGS.swingLookback),
+      telegramBotToken: (draft.telegramBotToken || "").trim(),
+      telegramChatId: (draft.telegramChatId || "").trim(),
     });
   };
   return (
@@ -255,6 +279,43 @@ export function SettingsModal({ settings, onSave, onClose, onExport, onImportCli
               and load its <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>latest.json</span> via <strong>Import JSON</strong> above.
             </div>
           )}
+        </div>
+
+        <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>
+          <div className="text-sm mb-1" style={{ color: C.text }}>
+            Telegram alerts <span className="text-xs" style={{ color: C.amber }}>P8</span>
+          </div>
+          <div className="text-xs mb-2" style={{ color: C.textFaint }}>
+            Signal pings go to your Telegram. Create a bot with <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>@BotFather</span> (its token goes below),
+            message your bot once, and get your chat id from <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>@userinfobot</span>. Save after filling in.
+          </div>
+          <div className="text-sm mb-1" style={{ color: C.text }}>Bot token</div>
+          <input
+            type="password"
+            value={draft.telegramBotToken || ""}
+            onChange={(e) => set("telegramBotToken", e.target.value)}
+            placeholder="123456789:AA…"
+            autoComplete="off"
+            style={{ ...fieldStyle, marginBottom: 10 }}
+          />
+          <div className="text-sm mb-1" style={{ color: C.text }}>Chat id</div>
+          <input
+            type="text"
+            value={draft.telegramChatId || ""}
+            onChange={(e) => set("telegramChatId", e.target.value)}
+            placeholder="e.g. 5512345678"
+            autoComplete="off"
+            style={{ ...fieldStyle, marginBottom: 10 }}
+          />
+          <button
+            onClick={testTelegram}
+            disabled={tgTest.status === "busy" || !(draft.telegramBotToken || "").trim() || !(draft.telegramChatId || "").trim()}
+            style={{ ...btn(C.panelAlt, C.text, `0.5px solid ${C.border}`), opacity: tgTest.status === "busy" ? 0.6 : 1 }}
+          >
+            {tgTest.status === "busy" ? "Sending…" : "Send test message"}
+          </button>
+          {tgTest.status === "ok" && <div className="text-xs mt-1" style={{ color: C.emerald }}>Sent ✓ — check your Telegram.</div>}
+          {tgTest.status === "error" && <div className="text-xs mt-1" style={{ color: C.rose }}>{tgTest.message}</div>}
         </div>
 
         <div className="mt-2 pt-4" style={{ borderTop: `0.5px solid ${C.border}` }}>

@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS = {
   brokerGmtOffsetHours: null, // reserved for the upcoming session view (Asian/London/NY)
   seriousStart: "2026-05-28", // YYYY-MM-DD; trades before this are archived as the beginner era
   swingLookback: 5,           // fractal pivot lookback for SMC swing detection
+  telegramBotToken: "",       // P8.4: BotFather token — signal alerts are skipped while empty
+  telegramChatId: "",         // P8.4: your chat id with the bot
 };
 
 // Single source of truth for which calendar day a trade belongs to. Uses the

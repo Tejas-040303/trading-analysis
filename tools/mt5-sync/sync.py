@@ -47,9 +47,10 @@ def load_config():
 
 def timeframe_const(tf):
     tfmap = {
-        "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15,
-        "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
-        "D1": mt5.TIMEFRAME_D1, "W1": mt5.TIMEFRAME_W1, "MN1": mt5.TIMEFRAME_MN1,
+        "M1": mt5.TIMEFRAME_M1, "M3": mt5.TIMEFRAME_M3, "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15, "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1, "W1": mt5.TIMEFRAME_W1,
+        "MN1": mt5.TIMEFRAME_MN1,
     }
     return tfmap.get(tf.upper())
 
@@ -84,10 +85,14 @@ def build_payload(cfg):
     positions = aggregate_positions(deals, orders)
     balance_ops = aggregate_balance_ops(deals)
 
-    since = now - timedelta(days=int(cfg.get("candleLookbackDays", 30)))
+    default_days = int(cfg.get("candleLookbackDays", 30))
     candles = []
     for s in cfg.get("symbols", []):
-        print(f"  candles: {s['symbol']} {s['timeframe']} …")
+        # Per-series "lookbackDays" override — fast confirmation TFs (M1/M3)
+        # only need a few days, no point hauling 40 days of 1-minute bars.
+        days = int(s.get("lookbackDays", default_days))
+        since = now - timedelta(days=days)
+        print(f"  candles: {s['symbol']} {s['timeframe']} ({days}d) …")
         group = fetch_candles(s["symbol"], s["timeframe"], since)
         if group:
             candles.append(group)
