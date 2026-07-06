@@ -4,11 +4,22 @@
 // Settings form); otherwise the user's saved settings are used.
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// Called from the browser (supabase.functions.invoke), so CORS headers are
+// required on every response and the OPTIONS preflight must succeed.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "content-type": "application/json" },
+  });
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "POST only" });
 
   const authHeader = req.headers.get("Authorization") || "";
