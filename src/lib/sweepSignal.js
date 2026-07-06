@@ -174,7 +174,12 @@ export function runSweepEngine({ sweepSeries, confirmSeries, openSignals = [], e
       invalidate.push(sig);
       continue;
     }
-    const confirmation = detectConfirmation(closedConfirm, sig.direction, sig.barTime);
+    // barTime is the sweep bar's OPEN; the sweep only exists once that bar
+    // CLOSES, so confirmation candles must come after barTime + timeframe.
+    // (Anchoring on the open let a mid-bar engulf — possibly minutes stale,
+    // possibly the confirmation of an EARLIER signal — confirm this one.)
+    const sweepClose = addMinutesIso(sig.barTime, tfMinutes[sig.timeframe] || 60);
+    const confirmation = detectConfirmation(closedConfirm, sig.direction, sweepClose);
     if (confirmation) {
       const plan = buildPlan(sig.direction, confirmation.close, sig.sweepExtreme, opts);
       if (plan) confirm.push({ signal: sig, confirmation, plan });

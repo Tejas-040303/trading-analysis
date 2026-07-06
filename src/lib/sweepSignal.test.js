@@ -156,9 +156,11 @@ describe("runSweepEngine", () => {
     expect(deduped.create).toHaveLength(0);
   });
   it("confirms a forming signal via M1 engulf with a full plan", () => {
+    // Sweep bar OPENS at iso15(8) = 12:00 and closes 12:15 — the engulf must
+    // print after the CLOSE to count (12:16/12:17 here).
     const m1 = [
-      bar(isoMin(121), 100.9, 101.0, 100.6, 100.7),
-      bar(isoMin(122), 100.65, 101.2, 100.6, 101.1),
+      bar(isoMin(136), 100.9, 101.0, 100.6, 100.7),
+      bar(isoMin(137), 100.65, 101.2, 100.6, 101.1),
       ...farFuture,
     ];
     const sig = { id: "s1", timeframe: "M15", direction: "bullish", barTime: iso15(8), sweptLevel: 100.0, sweepExtreme: 99.5 };
@@ -173,6 +175,25 @@ describe("runSweepEngine", () => {
     expect(out.confirm[0].confirmation.timeframe).toBe("M1");
     expect(out.confirm[0].plan.entry).toBe(101.1);
     expect(out.invalidate).toHaveLength(0);
+  });
+  it("ignores an engulf that printed before the sweep bar closed", () => {
+    // Engulf at 12:01–12:02, inside the sweep bar's own 12:00–12:15 window —
+    // exactly the stale-entry bug seen live on 2026-07-06: must NOT confirm.
+    const m1 = [
+      bar(isoMin(121), 100.9, 101.0, 100.6, 100.7),
+      bar(isoMin(122), 100.65, 101.2, 100.6, 101.1),
+      ...farFuture,
+    ];
+    const sig = { id: "s1", timeframe: "M15", direction: "bullish", barTime: iso15(8), sweptLevel: 100.0, sweepExtreme: 99.5 };
+    const out = runSweepEngine({
+      sweepSeries: { M15: sweepSeries15() },
+      confirmSeries: { M1: m1 },
+      openSignals: [sig],
+      existingKeys: new Set([`M15|bullish|${iso15(8)}`]),
+      opts: { swingLookback: 2, recentBars: 3 },
+    });
+    expect(out.confirm).toHaveLength(0);
+    expect(out.invalidate).toHaveLength(0); // still forming, waiting for a real confirmation
   });
   it("invalidates a forming signal when the level re-breaks", () => {
     const series = [...sweepSeries15(), bar(iso15(11), 100.4, 100.5, 99.3, 99.7)];
