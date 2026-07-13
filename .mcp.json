@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kling": {
+      "type": "http",
+      "url": "https://kling.ai/mcp"
+    }
+  }
+}
